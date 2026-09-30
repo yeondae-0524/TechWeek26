@@ -1,21 +1,7 @@
-"""
-Planning module
-- Frontier exploration
-- A* global planning
-- Costmap inflation
-- Local velocity helper
+"""팀 점유지도와 경로 규격을 사용하는 순수 Python Planning 모듈입니다.
 
-Interface:
-grid:
-    UNKNOWN=-1
-    FREE=0
-    OCCUPIED=1
-
-pose:
-    (x,y,theta)
-
-path:
-    [(row,col), ...]
+A*는 기본 4연결이며, 8연결은 명시적으로 선택해야 합니다. 원시 LiDAR에 대한
+마지막 안전 검사는 main의 SafetyMonitor가 담당합니다.
 """
 
 import heapq
@@ -26,480 +12,275 @@ import config
 from interfaces import FREE, OCCUPIED, UNKNOWN
 
 
-# =========================
-# Neighbor
-# =========================
-
-NEIGHBORS_4 = (
-    (-1,0,1.0),
-    (1,0,1.0),
-    (0,-1,1.0),
-    (0,1,1.0)
-)
-
+NEIGHBORS_4 = ((-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0))
 NEIGHBORS = NEIGHBORS_4 + (
-    (-1,-1,math.sqrt(2)),
-    (-1,1,math.sqrt(2)),
-    (1,-1,math.sqrt(2)),
-    (1,1,math.sqrt(2))
+    (-1, -1, math.sqrt(2.0)), (-1, 1, math.sqrt(2.0)),
+    (1, -1, math.sqrt(2.0)), (1, 1, math.sqrt(2.0)),
 )
 
 
-def inside(grid,r,c):
-    return (
-        0 <= r < len(grid)
-        and 0 <= c < len(grid[0])
-    )
+def inside(grid, row, col):
+    """셀 좌표가 지도 범위 안인지 확인합니다."""
+    return bool(grid) and 0 <= row < len(grid) and 0 <= col < len(grid[row])
 
 
-# =========================
-# Frontier
-# =========================
+def manhattan(a, b):
+    """4연결 경로의 장애물 없는 최소 이동 거리를 반환합니다."""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def heuristic(a, b):
+    """8연결 경로에 사용할 유클리드 거리 하한을 반환합니다."""
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
 
 def find_frontiers(grid):
-    """
-    FREE와 UNKNOWN 경계 탐색
-    """
-
-    frontiers=[]
-
-    for r,row in enumerate(grid):
-
-        for c,value in enumerate(row):
-
+    """UNKNOWN과 직교 방향으로 인접한 FREE 셀을 행/열 순서로 반환합니다."""
+    frontiers = []
+    for row, cells in enumerate(grid):
+        for col, value in enumerate(cells):
             if value != FREE:
                 continue
-
-
-            for dr,dc,_ in NEIGHBORS:
-
-                nr=r+dr
-                nc=c+dc
-
-                if inside(grid,nr,nc):
-                    if grid[nr][nc]==UNKNOWN:
-                        frontiers.append((r,c))
-                        break
-
-
+            if any(inside(grid, row + dr, col + dc)
+                   and grid[row + dr][col + dc] == UNKNOWN
+                   for dr, dc, _ in NEIGHBORS_4):
+                frontiers.append((row, col))
     return frontiers
 
 
-
-def cluster_frontiers(frontiers,min_size=1):
-
-    remain=set(frontiers)
-
-    clusters=[]
-
-
-    while remain:
-
-        start=remain.pop()
-
-        q=deque([start])
-
-        cluster=[start]
-
-
-        while q:
-
-            r,c=q.popleft()
-
-
-            for dr,dc,_ in NEIGHBORS:
-
-                nxt=(r+dr,c+dc)
-
-
-                if nxt in remain:
-
-                    remain.remove(nxt)
-                    q.append(nxt)
-                    cluster.append(nxt)
-
-
-
-        if len(cluster)>=min_size:
-            clusters.append(cluster)
-
-
-
+def cluster_frontiers(frontiers, min_size=1):
+    """8연결 frontier를 묶고 큰 클러스터부터 결정적인 순서로 반환합니다."""
+    remaining = set(frontiers)
+    clusters = []
+    for point in sorted(remaining):
+        if point not in remaining:
+            continue
+        remaining.remove(point)
+        queue = deque([point])
+        cluster = []
+        while queue:
+            row, col = queue.popleft()
+            cluster.append((row, col))
+            for dr, dc, _ in NEIGHBORS:
+                neighbor = (row + dr, col + dc)
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    queue.append(neighbor)
+        if len(cluster) >= min_size:
+            clusters.append(sorted(cluster))
+    clusters.sort(key=lambda cluster: (-len(cluster), cluster))
     return clusters
 
 
-
-def information_gain(grid,frontier,radius=4):
-
-    r,c=frontier
-
-    gain=0
-
-
-    for dr in range(-radius,radius+1):
-
-        for dc in range(-radius,radius+1):
-
-            nr=r+dr
-            nc=c+dc
-
-            if inside(grid,nr,nc):
-
-                if grid[nr][nc]==UNKNOWN:
-                    gain+=1
-
-
-    return gain
-
-
-
-def frontier_score(frontier,pose,grid,resolution,origin):
-
-    r,c=frontier
-
-
-    x = origin[0]+(c+0.5)*resolution
-    y = origin[1]+(r+0.5)*resolution
-
-
-    rx,ry,theta=pose
-
-
-    dx=x-rx
-    dy=y-ry
-
-
-    distance=math.hypot(dx,dy)
-
-
-    target_angle=math.atan2(dy,dx)
-
-
-    angle_error=abs(
-        math.atan2(
-            math.sin(target_angle-theta),
-            math.cos(target_angle-theta)
-        )
-    )
-
-
-    gain=information_gain(grid,frontier)
-
-
-
-    # 논문 기반 utility
-    return (
-        3.0*gain
-        -2.0*distance
-        -1.5*angle_error
-    )
-
-
-
-def select_frontier(grid,pose,resolution=None,origin=(0,0)):
-
-
-    if resolution is None:
-        resolution=config.GRID_RESOLUTION
-
-
-    frontiers=find_frontiers(grid)
-
-
-    if not frontiers:
+def cluster_centroid(cluster):
+    """클러스터의 평균 (row, col)을 반환합니다. 빈 클러스터는 None입니다."""
+    if not cluster:
         return None
+    return (sum(row for row, _ in cluster) / len(cluster),
+            sum(col for _, col in cluster) / len(cluster))
 
 
-    return max(
-        frontiers,
-        key=lambda f:
-        frontier_score(
-            f,
-            pose,
-            grid,
-            resolution,
-            origin
-        )
-    )
+def information_gain(grid, frontier, radius=4):
+    """frontier 주변에서 아직 관측하지 않은 셀의 수를 반환합니다."""
+    row, col = frontier
+    return sum(inside(grid, row + dr, col + dc)
+               and grid[row + dr][col + dc] == UNKNOWN
+               for dr in range(-radius, radius + 1)
+               for dc in range(-radius, radius + 1))
 
 
+def _resolution(resolution):
+    value = config.GRID_RESOLUTION if resolution is None else float(resolution)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("지도 해상도는 유한한 양수여야 합니다")
+    return value
 
-# =========================
-# Costmap
-# =========================
+
+def _cell_center(cell, resolution, origin):
+    row, col = cell
+    return (origin[0] + (col + 0.5) * resolution,
+            origin[1] + (row + 0.5) * resolution)
 
 
-def inflate_obstacles(grid,radius_cells=2):
+def frontier_score(frontier, pose, grid, resolution=None, origin=(0.0, 0.0)):
+    """지도 origin과 셀 중심을 반영해 정보량/거리/회전 비용을 평가합니다.
 
+    centered_on 지도의 호출자는 OccupancyGrid.origin을 origin으로 전달합니다.
     """
-    0~254 costmap 생성
+    resolution = _resolution(resolution)
+    fx, fy = _cell_center(frontier, resolution, origin)
+    x, y, theta = pose
+    dx, dy = fx - x, fy - y
+    heading = math.atan2(dy, dx)
+    angle_error = abs(math.atan2(math.sin(heading - theta), math.cos(heading - theta)))
+    return (3.0 * information_gain(grid, frontier)
+            - 2.0 * math.hypot(dx, dy) - 1.5 * angle_error)
 
-    254 : 장애물
-    100~253 : 위험지역
-    0 : 안전
+
+def select_frontier(grid, pose, resolution=None, origin=(0.0, 0.0)):
+    """동일 world 좌표계의 pose와 지도 origin을 사용해 frontier를 선택합니다."""
+    candidates = find_frontiers(grid)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda frontier:
+               frontier_score(frontier, pose, grid, resolution, origin))
+
+
+def inflate_obstacles(grid, radius_cells=2):
+    """원본을 변경하지 않고 장애물을 팽창한 {-1, 0, 1} 지도를 반환합니다.
+
+    셀 단위 실수 반경은 올림한 원형 마스크를 사용합니다. 팽창 범위 안의
+    UNKNOWN도 OCCUPIED로 막으며, 범위 밖의 UNKNOWN과 FREE는 보존합니다.
+    비용지도는 이 함수의 반환 규격이 아니며 A*의 costmap 인자로 따로 전달합니다.
     """
-
-    h=len(grid)
-    w=len(grid[0])
-
-
-    costmap=[
-        [0]*w
-        for _ in range(h)
-    ]
-
-
-    for r in range(h):
-
-        for c in range(w):
-
-            if grid[r][c]!=OCCUPIED:
+    radius_value = float(radius_cells)
+    if not math.isfinite(radius_value) or radius_value < 0:
+        raise ValueError("팽창 반경은 유한한 0 이상의 값이어야 합니다")
+    radius = math.ceil(radius_value)
+    result = [list(row) for row in grid]
+    offsets = [(dr, dc) for dr in range(-radius, radius + 1)
+               for dc in range(-radius, radius + 1)
+               if dr * dr + dc * dc <= radius * radius]
+    for row, cells in enumerate(grid):
+        for col, value in enumerate(cells):
+            if value != OCCUPIED:
                 continue
+            for dr, dc in offsets:
+                nr, nc = row + dr, col + dc
+                if inside(grid, nr, nc):
+                    result[nr][nc] = OCCUPIED
+    return result
 
 
-            for dr in range(-radius_cells,radius_cells+1):
+def astar(grid, start, goal, costmap=None, allow_unknown=True, connectivity=4):
+    """안전한 셀 경로를 반환합니다. 경로가 없거나 끝점이 잘못되면 []입니다.
 
-                for dc in range(-radius_cells,radius_cells+1):
-
-                    nr=r+dr
-                    nc=c+dc
-
-
-                    if not inside(grid,nr,nc):
-                        continue
-
-
-                    dist=math.sqrt(
-                        dr*dr+dc*dc
-                    )
-
-
-                    if dist==0:
-                        cost=254
-
-                    else:
-                        cost=max(
-                            1,
-                            int(
-                                254 -
-                                dist/radius_cells*200
-                            )
-                        )
-
-
-                    costmap[nr][nc]=max(
-                        costmap[nr][nc],
-                        cost
-                    )
-
-
-    return costmap
-
-
-
-# =========================
-# A*
-# =========================
-
-
-def heuristic(a,b):
-
-    return math.hypot(
-        a[0]-b[0],
-        a[1]-b[1]
-    )
-
-
-
-def astar(
-    grid,
-    start,
-    goal,
-    costmap=None,
-    allow_unknown=True,
-    connectivity=8
-):
-
-
-    if not inside(grid,*start):
+    기존 기본값은 UNKNOWN 통과 허용입니다. known-only 계획은
+    allow_unknown=False를 명시합니다. costmap은 점유지도와 크기가 같아야 하며
+    254 이상을 통과 금지로 취급합니다. 8연결은 대각선 양옆 셀도 검사합니다.
+    """
+    if connectivity not in (4, 8):
+        raise ValueError("connectivity는 4 또는 8이어야 합니다")
+    if not grid or not grid[0]:
         return []
+    width = len(grid[0])
+    if any(len(row) != width for row in grid):
+        raise ValueError("점유지도는 직사각형이어야 합니다")
+    if costmap is not None and (len(costmap) != len(grid)
+                               or any(len(row) != width for row in costmap)):
+        raise ValueError("비용지도와 점유지도의 크기가 일치해야 합니다")
 
+    def traversable(cell):
+        if len(cell) != 2 or not all(isinstance(value, int) for value in cell):
+            return False
+        row, col = cell
+        if not inside(grid, row, col):
+            return False
+        value = grid[row][col]
+        if value == OCCUPIED or (value == UNKNOWN and not allow_unknown):
+            return False
+        if value not in (FREE, UNKNOWN):
+            return False
+        if costmap is not None:
+            cost = costmap[row][col]
+            if not math.isfinite(cost) or cost < 0 or cost >= 254:
+                return False
+        return True
 
-    if not inside(grid,*goal):
+    start, goal = tuple(start), tuple(goal)
+    if not traversable(start) or not traversable(goal):
         return []
-
-
-
-    neighbors = (
-        NEIGHBORS_4
-        if connectivity==4
-        else NEIGHBORS
-    )
-
-
-    pq=[]
-
-    heapq.heappush(
-        pq,
-        (0,start)
-    )
-
-
-    parent={
-        start:None
-    }
-
-
-    cost={
-        start:0
-    }
-
-
-    while pq:
-
-
-        _,current=heapq.heappop(pq)
-
-
-        if current==goal:
-
-            path=[]
-
-            while current:
-
+    if start == goal:
+        return [start]
+    neighbors = NEIGHBORS_4 if connectivity == 4 else NEIGHBORS
+    estimate = manhattan if connectivity == 4 else heuristic
+    queue = [(estimate(start, goal), 0.0, start)]
+    parent = {start: None}
+    costs = {start: 0.0}
+    while queue:
+        _, queued_cost, current = heapq.heappop(queue)
+        if queued_cost != costs[current]:
+            continue
+        if current == goal:
+            path = []
+            while current is not None:
                 path.append(current)
-                current=parent[current]
-
-
-            return path[::-1]
-
-
-
-        r,c=current
-
-
-        for dr,dc,move in neighbors:
-
-
-            nr=r+dr
-            nc=c+dc
-
-
-            nxt=(nr,nc)
-
-
-            if not inside(grid,nr,nc):
+                current = parent[current]
+            return list(reversed(path))
+        row, col = current
+        for dr, dc, move_cost in neighbors:
+            nxt = (row + dr, col + dc)
+            if not traversable(nxt):
                 continue
-
-
-            cell=grid[nr][nc]
-
-
-            if cell==OCCUPIED:
+            if dr and dc and (not traversable((row + dr, col))
+                              or not traversable((row, col + dc))):
                 continue
-
-
-            if cell==UNKNOWN and not allow_unknown:
-                continue
-
-
-            if dr and dc:
-
-                if grid[r][nc]==OCCUPIED:
-                    continue
-
-                if grid[nr][c]==OCCUPIED:
-                    continue
-
-
-
-            extra=0
-
-
-            if costmap:
-
-                extra=costmap[nr][nc]/100
-
-
-                if costmap[nr][nc]>=254:
-                    continue
-
-
-
-            new_cost=cost[current]+move+extra
-
-
-            if nxt not in cost or new_cost<cost[nxt]:
-
-                cost[nxt]=new_cost
-
-                parent[nxt]=current
-
-
-                heapq.heappush(
-                    pq,
-                    (
-                        new_cost+heuristic(nxt,goal),
-                        nxt
-                    )
-                )
-
-
+            extra = costmap[nxt[0]][nxt[1]] / 100.0 if costmap is not None else 0.0
+            new_cost = queued_cost + move_cost + extra
+            if new_cost < costs.get(nxt, math.inf):
+                costs[nxt] = new_cost
+                parent[nxt] = current
+                heapq.heappush(queue, (new_cost + estimate(nxt, goal), new_cost, nxt))
     return []
 
 
+def _segment_cost(costmap, pose, target, resolution, origin):
+    """1D 전방 비용 또는 동일 지도 좌표계의 2D 이동 구간 비용을 확인합니다."""
+    if costmap is None or len(costmap) == 0:
+        return 0.0
+    if not isinstance(costmap[0], (list, tuple)):
+        values = list(costmap)
+    else:
+        distance = math.hypot(target[0] - pose[0], target[1] - pose[1])
+        steps = max(1, math.ceil(distance / (resolution / 2.0)))
+        values = []
+        for index in range(steps + 1):
+            fraction = index / steps
+            x = pose[0] + fraction * (target[0] - pose[0])
+            y = pose[1] + fraction * (target[1] - pose[1])
+            row = math.floor((y - origin[1]) / resolution)
+            col = math.floor((x - origin[0]) / resolution)
+            if not inside(costmap, row, col):
+                return 254.0
+            values.append(costmap[row][col])
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        return 254.0
+    return max(values, default=0.0)
 
-# =========================
-# Local helper
-# =========================
 
+def local_planner(path, pose, local_costmap=None, resolution=None, origin=(0.0, 0.0)):
+    """셀 경로에서 제한된 (이동 속도, 회전 속도)를 계산하는 보조 함수입니다.
 
-def local_planner(path,pose):
-
+    origin은 OccupancyGrid.origin과 같아야 합니다. 2D costmap도 이 지도와 같은
+    좌표계를 사용합니다. 이 함수만으로 LiDAR 회피 안전을 보장하지 않으며,
+    main의 마지막 SafetyMonitor 검사를 반드시 적용해야 합니다. 실제 main의
+    waypoint 추종은 navigation_control이 담당합니다.
+    """
     if not path:
-        return 0.0,0.0
-
-
-    r,c=path[-1]
-
-
-    resolution=config.GRID_RESOLUTION
-
-
-    gx=c*resolution
-    gy=r*resolution
-
-
-    x,y,theta=pose
-
-
-    angle=math.atan2(
-        gy-y,
-        gx-x
-    )
-
-
-    error=math.atan2(
-        math.sin(angle-theta),
-        math.cos(angle-theta)
-    )
-
-
-    w=max(
-        -config.MAX_ANGULAR_SPEED,
-        min(
-            config.MAX_ANGULAR_SPEED,
-            error*2
-        )
-    )
-
-
-    v=config.MAX_LINEAR_SPEED
-
-
-    if abs(error)>0.8:
-        v=0
-
-
-    return v,w
-
+        return 0.0, 0.0
+    resolution = _resolution(resolution)
+    points = [_cell_center(cell, resolution, origin) for cell in path]
+    goal_distance = math.hypot(points[-1][0] - pose[0], points[-1][1] - pose[1])
+    if goal_distance <= config.NAV_GOAL_TOLERANCE:
+        return 0.0, 0.0
+    nearest = min(range(len(points)), key=lambda index:
+                  math.hypot(points[index][0] - pose[0], points[index][1] - pose[1]))
+    target_index = nearest
+    along_path = 0.0
+    while target_index < len(points) - 1 and along_path < config.NAV_LOOKAHEAD:
+        first, second = points[target_index], points[target_index + 1]
+        along_path += math.hypot(second[0] - first[0], second[1] - first[1])
+        target_index += 1
+    target = points[target_index]
+    angle = math.atan2(target[1] - pose[1], target[0] - pose[0]) - pose[2]
+    error = math.atan2(math.sin(angle), math.cos(angle))
+    angular = max(-config.MAX_ANGULAR_SPEED,
+                  min(config.MAX_ANGULAR_SPEED, config.NAV_HEADING_KP * error))
+    danger = _segment_cost(local_costmap, pose, target, resolution, origin)
+    if danger >= 254:
+        return 0.0, 0.0
+    if abs(error) > config.NAV_ROTATE_THRESHOLD:
+        return 0.0, angular
+    speed = config.MAX_LINEAR_SPEED * min(1.0, goal_distance / config.NAV_APPROACH_DISTANCE)
+    speed *= max(0.0, 1.0 - danger / 254.0)
+    return speed, angular
