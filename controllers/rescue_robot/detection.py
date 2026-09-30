@@ -1,30 +1,35 @@
-"""Target detection: one camera frame -> target dict (single-frame, OpenCV HSV).
+"""Target detection: red apples (mission: find 2, then return home). Location unknown.
 
-Input:
-    frame : NumPy array (H, W, 3), BGR, uint8 - from devices.read_camera_frame()
-            or None if no camera image is available.
-
-Output (see interfaces.empty_target / AGENTS.md "팀 규격"):
-    {
-        "found": bool,
-        "cx": int | None,          # target centre column in pixels
-        "direction": "LEFT" | "CENTER" | "RIGHT" | None,
-        "area": float,             # pixel area, 0.0 if not found
-    }
-    direction rule: split the image width in three equal parts.
-
-Pipeline (same family as the official tb3_segmentation example and
-docs/research/07_TARGET_SEARCH.md §2):
+Single frame  -> ``detect(frame)`` returns (target dict, list of Blob)
     BGR -> blur -> HSV -> inRange (config.TARGET_HSV_RANGES) -> opening
-        -> largest external contour -> area >= TARGET_MIN_AREA -> centroid cx
+        -> external contours -> per-blob geometry -> filters -> valid blobs
+    Filters (docs/research/07_TARGET_SEARCH.md §4-§5):
+        * area >= TARGET_MIN_AREA
+        * round: area / enclosing-circle area >= TARGET_MIN_FILL, aspect in range
+        * size-based distance (pinhole, TARGET_SIZE) <= TARGET_MAX_RANGE
+        * optional height window TARGET_HEIGHT_RANGE (OFF by default: where the
+          apples lie is unknown; only enable it if the organizers confirm it)
+    ``detect_target(frame)`` returns only the shared target dict:
+        {"found": bool, "cx": int | None,
+         "direction": "LEFT" | "CENTER" | "RIGHT" | None, "area": float}
+    (largest valid blob; direction = image width split in three).
 
-NOT implemented (TODO, feat/detection):
-    * multi-frame confirmation (M-of-N), bearing / world position, dedup
-      (TargetTracker, research 07 §4-§6)
-    * final colour / shape rules - the target appearance is announced on the day
+Multiple frames -> ``TargetTracker``
+    Converts valid blobs to world (x, y) with the robot pose, associates them to
+    tracks (de-duplication), confirms a track when it was seen in >= M of the
+    last N detection cycles with a small position spread, and keeps a visited
+    flag so a target is counted once.
+
+Input frame: NumPy (H, W, 3) BGR uint8 from devices.read_camera_frame(), or None.
+
+NOT implemented (TODO): LiDAR range fusion (an apple lower than the 0.173 m LiDAR
+plane is not seen by the LiDAR, so size-based range is used), occlusion memory /
+re-search.
 """
 
+import math
 import os
+from collections import deque
 
 import config
 from interfaces import empty_target
@@ -38,11 +43,15 @@ except ImportError:  # pragma: no cover - depends on the local Python install
 
 _warned = False
 
-# Debug: RESCUE_FRAME_DUMP=<folder> saves the latest frame.png and mask.png at
-# every detection call (overwritten), to tune TARGET_HSV_RANGES on real frames.
+# Debug: RESCUE_FRAME_DUMP=<folder> writes frame.png (camera), mask.png (colour
+# threshold) and debug.png (blobs: green = accepted, red = rejected + reason) at
+# every detection call (overwritten). Use with scripts/tune_hsv.py.
 FRAME_DUMP_DIR = os.environ.get("RESCUE_FRAME_DUMP")
 
 
+# ---------------------------------------------------------------------------
+# Single frame
+# ---------------------------------------------------------------------------
 def direction_of(cx, width):
     """LEFT / CENTER / RIGHT by splitting the image width in three equal parts."""
     if cx < width / 3.0:
@@ -50,6 +59,12 @@ def direction_of(cx, width):
     if cx < 2.0 * width / 3.0:
         return "CENTER"
     return "RIGHT"
+
+
+def focal_length_px(width, hfov=None):
+    """Pinhole focal length [px]: (W/2) / tan(HFOV/2). 640 px, 60 deg -> ~554.3."""
+    hfov = config.CAMERA_HFOV if hfov is None else hfov
+    return (width / 2.0) / math.tan(hfov / 2.0)
 
 
 def target_mask(frame, hsv_ranges=None):
@@ -69,31 +84,219 @@ def target_mask(frame, hsv_ranges=None):
     return mask
 
 
-def detect_target(frame, hsv_ranges=None, min_area=None):
-    """Largest blob of the target colour in one frame. Always returns a NEW dict."""
+def blob_geometry(contour, width, height):
+    """Measurements of one contour + camera-geometry estimates (no filtering)."""
+    area = float(cv2.contourArea(contour))
+    moments = cv2.moments(contour)
+    x, y, w, h = cv2.boundingRect(contour)
+    (_, _), radius = cv2.minEnclosingCircle(contour)
+    if moments["m00"] > 0:
+        cx, cy = moments["m10"] / moments["m00"], moments["m01"] / moments["m00"]
+    else:
+        cx, cy = x + w / 2.0, y + h / 2.0
+    f = focal_length_px(width)
+    diameter = max(2.0 * radius, 1.0)
+    depth = f * config.TARGET_SIZE / diameter                # along the optical axis [m]
+    lateral = (width / 2.0 - cx) * depth / f                 # + = left [m]
+    center_height = config.CAMERA_HEIGHT - (cy - height / 2.0) * depth / f
+    return {
+        "cx": int(round(cx)), "cy": int(round(cy)), "area": area,
+        "box": (x, y, w, h), "radius": float(radius),
+        "fill": area / (math.pi * radius * radius) if radius > 0 else 0.0,
+        "aspect": w / float(h) if h else 0.0,
+        "depth": depth, "lateral": lateral,
+        "range": math.hypot(depth, lateral),
+        "bearing": math.atan2(lateral, depth),               # + = left (CCW)
+        "center_height": center_height,
+    }
+
+
+def reject_reason(blob):
+    """None if the blob looks like a target, else a short reason."""
+    if blob["area"] < config.TARGET_MIN_AREA:
+        return "small"
+    if blob["fill"] < config.TARGET_MIN_FILL:
+        return "not round"
+    lo, hi = config.TARGET_ASPECT_RANGE
+    if not lo <= blob["aspect"] <= hi:
+        return "aspect"
+    if blob["range"] > config.TARGET_MAX_RANGE:
+        return "too far"
+    if config.TARGET_HEIGHT_RANGE is not None:
+        lo, hi = config.TARGET_HEIGHT_RANGE
+        if not lo <= blob["center_height"] <= hi:
+            return "height"
+    return None
+
+
+def find_blobs(frame, hsv_ranges=None):
+    """(valid blobs largest first, rejected [(blob, reason)], mask)."""
+    height, width = frame.shape[:2]
+    mask = target_mask(frame, hsv_ranges)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    valid, rejected = [], []
+    for contour in contours:
+        blob = blob_geometry(contour, width, height)
+        reason = reject_reason(blob)
+        if reason is None:
+            valid.append(blob)
+        elif blob["area"] >= 4:  # ignore single-pixel noise in the debug output
+            rejected.append((blob, reason))
+    valid.sort(key=lambda b: b["area"], reverse=True)
+    return valid, rejected, mask
+
+
+def detect(frame, hsv_ranges=None):
+    """(target dict, valid blobs). The dict follows the shared interface."""
     global _warned
     if frame is None:
-        return empty_target()
+        return empty_target(), []
     if cv2 is None:
         if not _warned:
             print("[detection] WARNING: OpenCV/NumPy not installed -> detection disabled")
             _warned = True
-        return empty_target()
-    min_area = config.TARGET_MIN_AREA if min_area is None else min_area
-
-    mask = target_mask(frame, hsv_ranges)
+        return empty_target(), []
+    valid, rejected, mask = find_blobs(frame, hsv_ranges)
     if FRAME_DUMP_DIR:
-        os.makedirs(FRAME_DUMP_DIR, exist_ok=True)
-        cv2.imwrite(os.path.join(FRAME_DUMP_DIR, "frame.png"), np.ascontiguousarray(frame))
-        cv2.imwrite(os.path.join(FRAME_DUMP_DIR, "mask.png"), mask)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return empty_target()
-    largest = max(contours, key=cv2.contourArea)
-    area = float(cv2.contourArea(largest))
-    moments = cv2.moments(largest)
-    if area < min_area or moments["m00"] == 0:
-        return empty_target()
+        dump_debug(FRAME_DUMP_DIR, frame, mask, valid, rejected)
+    if not valid:
+        return empty_target(), []
+    best = valid[0]
+    target = {"found": True, "cx": best["cx"], "direction": direction_of(best["cx"], frame.shape[1]),
+              "area": best["area"]}
+    return target, valid
 
-    cx = int(round(moments["m10"] / moments["m00"]))
-    return {"found": True, "cx": cx, "direction": direction_of(cx, frame.shape[1]), "area": area}
+
+def detect_target(frame, hsv_ranges=None):
+    """Shared interface: largest valid target in one frame. Always a NEW dict."""
+    return detect(frame, hsv_ranges)[0]
+
+
+def dump_debug(folder, frame, mask, valid, rejected):
+    os.makedirs(folder, exist_ok=True)
+    image = np.ascontiguousarray(frame).copy()
+    cv2.imwrite(os.path.join(folder, "frame.png"), image)
+    cv2.imwrite(os.path.join(folder, "mask.png"), mask)
+    labels = ([(b, (0, 255, 0), f"OK {b['range']:.2f}m h{b['center_height']:.2f}") for b in valid]
+              + [(b, (0, 0, 255), reason) for b, reason in rejected])
+    for blob, color, text in labels:
+        x, y, w, h = blob["box"]
+        cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
+        cv2.putText(image, text, (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+    h = image.shape[0]
+    cv2.line(image, (0, h // 2), (image.shape[1], h // 2), (255, 255, 0), 1)  # horizon
+    cv2.imwrite(os.path.join(folder, "debug.png"), image)
+
+
+# ---------------------------------------------------------------------------
+# Multiple frames
+# ---------------------------------------------------------------------------
+def blob_to_world(blob, pose):
+    """World (x, y) of a blob seen from ``pose`` (camera offset applied)."""
+    x, y, th = pose
+    px = config.CAMERA_OFFSET[0] + blob["depth"]
+    py = config.CAMERA_OFFSET[1] + blob["lateral"]
+    c, s = math.cos(th), math.sin(th)
+    return (x + c * px - s * py, y + s * px + c * py)
+
+
+class TargetTracker:
+    """M-of-N confirmation + de-duplication + visited bookkeeping.
+
+    Call ``update(now, pose, blobs)`` once per detection cycle (also with an
+    empty list, so misses are counted). Tracks are dicts:
+        {"id", "xy", "confirmed", "visited", "hits", "points", "ranges", "last_seen"}
+    """
+
+    def __init__(self, window=None, min_hits=None, dedup_radius=None,
+                 range_error=None, max_spread=None, required=None):
+        self.window = config.TRACK_WINDOW if window is None else window
+        self.min_hits = config.TRACK_MIN_HITS if min_hits is None else min_hits
+        self.dedup_radius = config.TRACK_DEDUP_RADIUS if dedup_radius is None else dedup_radius
+        self.range_error = config.TRACK_RANGE_ERROR if range_error is None else range_error
+        self.max_spread = config.TRACK_MAX_SPREAD if max_spread is None else max_spread
+        self.required = config.REQUIRED_TARGETS if required is None else required
+        self.tracks = []
+        self._next_id = 1
+
+    # --------------------------------------------------------- update
+    def update(self, now, pose, blobs):
+        """Returns the tracks that became confirmed in this cycle."""
+        observations = [(blob_to_world(b, pose), b["range"]) for b in blobs]
+        matched = set()
+        newly_confirmed = []
+        for xy, rng in observations:
+            track = self._associate(xy, rng, matched)
+            if track is None:
+                track = {"id": self._next_id, "xy": xy, "confirmed": False, "visited": False,
+                         "hits": deque(maxlen=self.window), "points": deque(maxlen=self.window),
+                         "ranges": deque(maxlen=self.window), "last_seen": now}
+                self._next_id += 1
+                self.tracks.append(track)
+            if track["id"] in matched:
+                continue  # two blobs on the same target in one frame: count once
+            matched.add(track["id"])
+            track["hits"].append(True)
+            track["points"].append(xy)
+            track["ranges"].append(rng)
+            track["last_seen"] = now
+            track["xy"] = _mean(track["points"])
+            if not track["confirmed"] and self._confirmable(track):
+                track["confirmed"] = True
+                newly_confirmed.append(track)
+        for track in self.tracks:
+            if track["id"] not in matched:
+                track["hits"].append(False)
+        # tentative tracks that were not seen during a whole window are dropped
+        self.tracks = [t for t in self.tracks
+                       if t["confirmed"] or len(t["hits"]) < self.window or any(t["hits"])]
+        return newly_confirmed
+
+    def _tolerance(self, base, rng):
+        return max(base, self.range_error * rng)
+
+    def _associate(self, xy, rng, matched):
+        best, best_d = None, None
+        for track in self.tracks:
+            d = math.hypot(xy[0] - track["xy"][0], xy[1] - track["xy"][1])
+            if d <= self._tolerance(self.dedup_radius, rng) and (best_d is None or d < best_d):
+                best, best_d = track, d
+        return best
+
+    def _confirmable(self, track):
+        if sum(track["hits"]) < self.min_hits:
+            return False
+        mx, my = track["xy"]
+        spread = math.sqrt(sum((x - mx) ** 2 + (y - my) ** 2 for x, y in track["points"])
+                           / len(track["points"]))
+        mean_range = sum(track["ranges"]) / len(track["ranges"])
+        return spread <= self._tolerance(self.max_spread, mean_range)
+
+    # --------------------------------------------------------- queries
+    def confirmed(self):
+        return [t for t in self.tracks if t["confirmed"]]
+
+    def unvisited(self):
+        return [t for t in self.confirmed() if not t["visited"]]
+
+    def nearest_unvisited(self, pose):
+        candidates = self.unvisited()
+        if not candidates:
+            return None
+        return min(candidates, key=lambda t: math.hypot(t["xy"][0] - pose[0], t["xy"][1] - pose[1]))
+
+    def mark_visited(self, track_id):
+        for track in self.tracks:
+            if track["id"] == track_id:
+                track["visited"] = True
+
+    def visited_count(self):
+        return sum(1 for t in self.tracks if t["visited"])
+
+    def all_visited(self):
+        return self.required is not None and self.visited_count() >= self.required
+
+
+def _mean(points):
+    n = len(points)
+    return (sum(p[0] for p in points) / n, sum(p[1] for p in points) / n)

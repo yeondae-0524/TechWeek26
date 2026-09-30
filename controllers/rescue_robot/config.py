@@ -29,21 +29,48 @@ MAP_UPDATE_PERIOD = 0.128   # s [INITIAL TUNING] one new scan into the grid
 DETECTION_PERIOD = 0.128    # s [INITIAL TUNING] camera read + detect_target()
 
 # ---------------------------------------------------------------------------
-# Detection (target appearance is announced on the day [DAY-OF])
+# Detection: mission targets = 2 red apples (team decision, 2026-09-30)
 # ---------------------------------------------------------------------------
+# Target LOCATIONS are never configured here: they are unknown by rule.
+REQUIRED_TARGETS = 2          # distinct targets to visit before RETURN_HOME
+
 # OpenCV HSV ranges (H 0-179, S 0-255, V 0-255), list of (lower, upper). A pixel
 # matching ANY range counts. Red needs two ranges because its hue wraps at 0/180.
-# Practice default: the green ball in breakroom_teleop_rescue.wbt [INITIAL TUNING].
+# Tune on real Webots frames: RESCUE_FRAME_DUMP + scripts/tune_hsv.py [INITIAL TUNING].
 TARGET_HSV_RANGES = [
-    ((35, 80, 40), (85, 255, 255)),     # green
+    ((0, 120, 70), (10, 255, 255)),     # red, low hue side
+    ((170, 120, 70), (179, 255, 255)),  # red, high hue side
 ]
-# Examples for the official practice apples (tune with real frames first):
-#   red    [((0, 120, 70), (10, 255, 255)), ((170, 120, 70), (179, 255, 255))]
-#   orange [((10, 120, 70), (25, 255, 255))]
-#   purple [((125, 80, 50), (155, 255, 255))]
-TARGET_MIN_AREA = 80.0        # px, smaller blobs are ignored [INITIAL TUNING]
+# Other practice colours (examples, tune first):
+#   green ball [((35, 80, 40), (85, 255, 255))]   orange [((10, 120, 70), (25, 255, 255))]
+TARGET_MIN_AREA = 40.0        # px, smaller blobs are ignored [INITIAL TUNING]
 DETECTION_BLUR_KERNEL = 5     # odd, GaussianBlur kernel size (0 = off)
-DETECTION_MORPH_KERNEL = 5    # odd, opening kernel to remove speckles (0 = off)
+DETECTION_MORPH_KERNEL = 3    # odd, opening kernel to remove speckles (0 = off)
+
+# Target size: official RedApple = bounding sphere diameter 0.1 m [OFFICIAL protos].
+TARGET_SIZE = 0.10            # m, diameter used for size-based distance (no height assumption)
+# Blob filters (reject furniture, books, paintings ...) - none of them assumes where
+# the apple lies. Practice worlds put apples on the floor, but the competition
+# placement is unknown, so the height filter is OFF by default.
+TARGET_MIN_FILL = 0.5         # blob area / enclosing circle area (apple ~0.8) [INITIAL TUNING]
+TARGET_ASPECT_RANGE = (0.5, 2.0)  # bounding box width / height [INITIAL TUNING]
+TARGET_MAX_RANGE = 4.0        # m, farther estimates are ignored [INITIAL TUNING]
+# (min, max) height of the apple centre above the floor [m], or None = any height.
+# Only set this if the organizers confirm where targets can be, e.g. (0.0, 0.2) = floor.
+TARGET_HEIGHT_RANGE = None
+
+# Camera (official extensionSlot Camera): 640x480, horizontal FOV 1.0472 rad,
+# robot frame (0.02, 0, 0.073), looking forward, no tilt [OFFICIAL/DERIVED].
+CAMERA_HFOV = 1.0472          # rad
+CAMERA_OFFSET = (0.02, 0.0)   # (x, y) in the robot frame [m]
+CAMERA_HEIGHT = 0.073         # m above the floor
+
+# Multi-frame confirmation and de-duplication (research 07 §4, §6) [INITIAL TUNING]
+TRACK_WINDOW = 5              # last N detection cycles
+TRACK_MIN_HITS = 3            # seen in >= M of them -> confirmed
+TRACK_DEDUP_RADIUS = 0.30     # m, observations closer than this = same target
+TRACK_RANGE_ERROR = 0.15      # relative size-distance error -> association radius grows with range
+TRACK_MAX_SPREAD = 0.10       # m (grows with range the same way) max position std to confirm
 
 # ---------------------------------------------------------------------------
 # Occupancy grid
