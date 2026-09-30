@@ -17,18 +17,20 @@
 3×3m 경기장과 0.5m 벽으로 유한한 LiDAR 관측을 확보하며 시작 pose는 (0,0,0)입니다.
 정답 pose나 지도는 controller에 제공하지 않습니다.
 휴게실 시나리오에는 `worlds/breakroom_control_test.wbt`를 사용합니다.
-공식 `breakroom_sensor_test.wbt`의 복사본이며 controller만 `rescue_robot`으로 바꿨습니다.
+공식 `breakroom_sensor_test.wbt`의 복사본이며 controller와 제공된 시작 pose의 customData를 설정했습니다.
 기본 모드는 `STOP`입니다. Python은 대회 기준 3.10을 사용해야 합니다.
 PATH와 Webots 전역 설정은 이 작업에서 바꾸지 않았습니다.
-기본 START_POSE는 이 시험 world의 제공된 시작점 `(-1.265, 1.811, -24.3도)`입니다.
-다른 world에서는 config.START_POSE를 해당 시작 pose로 바꾸거나 제공된 customData를 사용합니다.
+기본 START_POSE는 팀 검증 world `rescue_baseline.wbt`의 `(-0.5, -0.8, 0도)`입니다.
+팀 시험 world는 `customData.start_pose`로 각 world가 제공한 시작 pose를 전달하며 이 값을 우선 사용합니다.
+새 world에 customData가 없으면 config.START_POSE를 제공된 시작 pose로 맞춰야 합니다.
 
 Webots를 시작하는 PowerShell에서 다음 환경 변수를 설정합니다.
 이미 열린 Webots에는 새 환경 변수가 전달되지 않을 수 있습니다.
 
 ```powershell
 $env:RESCUE_MODE = 'NAV_TEST'
-$env:RESCUE_WAYPOINTS = '[[1,0],[1,1],[0,1]]'
+$env:RESCUE_WAYPOINTS = '[[0.4,0],[0.4,0.4]]'
+& 'C:\Program Files\Webots\msys64\mingw64\bin\webots.exe' "$PWD\worlds\control_arena_test.wbt"
 ```
 
 이 좌표는 **시작점 기준 미터 좌표**입니다. 시작 방향이 +x, 시작 왼쪽이 +y입니다.
@@ -66,7 +68,8 @@ Planner가 우회 경로를 계산한 뒤 위 함수를 호출하면 진전 감�
 2. 장애물 접근 시 감속하고, 가까운 점/예측 충돌/미관측 공간에서는 정지합니다.
 3. 기다리는 동안 장애물이 사라지면 기존 경로를 이어 갑니다.
 4. 4초 이상 계속 막히거나 전진 명령 대비 위치 진전이 없으면 재계획을 요청합니다.
-5. `RETURN_HOME`에서는 기존 A*로 새 경로를 얻어 추종합니다.
+5. `RETURN_HOME`에서는 로봇 반경과 여유 거리로 팽창한 지도를 A*에 전달해 새 경로를 얻습니다.
+   현재 5cm 셀에서는 0.161m 안전 반경을 4셀로 올림해 벽 주변을 통과 금지로 만듭니다.
 
 Control이 임의로 좌우 우회 경로를 만들어 내지는 않습니다. 우회는 Planner가 맡습니다.
 막힌 복귀 경로는 새 계획을 하기 전에 정지 명령을 한 번 Webots step으로 전달합니다.
@@ -87,12 +90,14 @@ Webots 실제 주행 결과와 Python 3.10 실행 결과는 오프라인 테스�
 저장소 루트에서 전체 단위 테스트를 실행합니다.
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py"
+py -3.10 scripts/verify_baseline.py
+py -3.10 scripts/verify_baseline.py --webots
+py -3.10 -m unittest discover -s tests -p "test_*.py"
 ```
 
 ## 실제 실행 확인 (2026-09-30)
 
-- Python 3.10.11: 전체 단위 및 main 통합 테스트 37개 PASS.
+- Python 3.10.11: 전체 단위 및 main 통합 테스트 147개 PASS. 기존 테스트는 유지하고 회귀 테스트 24개를 추가했습니다.
 - Webots R2025a, `control_arena_test.wbt`, 64ms 동기 실행, 별도 숨겨진 검증 프로세스.
 - 직선 `[[0.3,0]]`: `REACHED` → `DONE`. encoder 추정 위치는 약 (0.201, 0.000)m.
 - 코너 `[[0.4,0],[0.4,0.4]]`: `REACHED` → `DONE`. encoder 추정 pose는 약 (0.405, 0.303, 89.6도).
@@ -101,3 +106,25 @@ python -m unittest discover -s tests -p "test_*.py"
 - 이 결과는 도착 상태와 encoder pose 확인이며 정답 pose 비교/충돌 횟수 계측은 수행하지 않았습니다.
 - 휴게실의 전방 inf는 UNKNOWN_SPACE로 정지하는 기존 정책을 유지합니다. 넓은 공간을
   이동하려면 관측 이력/지도와 사각 정보를 결합한 안전 정책을 별도로 설계·검증해야 합니다.
+
+## 병합 후 통합 수정 (2026-09-30)
+
+- Planning API의 `min_size`, `allow_unknown`, `manhattan`, `cluster_centroid` 계약을 맞췄습니다.
+- 장애물 팽창은 실수 반경을 지원하고 팀 점유지도 형식을 유지합니다. 원본 지도는 변경하지 않습니다.
+- 범위 밖/점유된 끝점, 대각선 모서리 통과, 치명 비용지도 셀은 A*에서 차단합니다.
+- 실제 복귀 함수의 팽창 → A* 우회 → 지도 셀 중심 waypoint 인계를 오프라인으로 검증합니다.
+- 검증 스크립트가 모든 test 파일을 포함하며 한글 성공/오류 로그와 조기 종료도 검사합니다.
+- 제공된 world 시작 pose를 우선 사용하며 휴게실 시험 복사본에도 이 값을 추가했습니다.
+- Webots STOP 유지 및 코너 NAV_TEST → DONE을 다시 확인했습니다. 전체 자율 탐색·대상 접근은 TODO입니다.
+
+최종 확인 결과:
+
+- `py -3.10 -m unittest discover -s tests -p "test_*.py"`: 147개 PASS.
+- `verify_baseline.py --webots`: 모든 검사 PASS. 기본 2m world에서 STOP의 최대 encoder 편차 0.0000m/0.0도.
+- `verify_baseline.py --webots --mode CONTROL_TEST --world worlds/control_arena_test.wbt`: 모든 검사 PASS.
+  전진 0.110m, 좌회전 +65.9도, 우회전 후 약 0도, 최종 DONE.
+- `verify_baseline.py --webots --world worlds/breakroom_control_test.wbt`: 모든 검사 PASS.
+  customData 시작점 (-1.265, 1.811, -24.3도) 확인, STOP의 최대 encoder 편차 0.0000m/0.0도.
+- 별도 코너 NAV_TEST `[[0.4,0],[0.4,0.4]]`: REACHED → DONE, encoder pose (0.405, 0.303, 89.6도).
+- 장애물 팽창·A* 우회·실제 복귀 함수의 경로 인계는 오프라인 회귀 테스트로 확인했습니다.
+  장애물이 있는 복귀 전체 주행과 움직이는 사람 대응은 아직 Webots에서 검증하지 않았습니다.

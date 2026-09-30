@@ -7,10 +7,6 @@
 
 **현재 상태: Control 통합 개발 중.** `controllers/rescue_robot/main.py`에 encoder 위치 추정, waypoint 추종, LiDAR 안전 검사와 A* 복귀 경로 추종을 연결했다.
 탐색 목표 선택과 구조 대상 접근은 아직 미구현이다. 소형 시험 world에서 Webots 직선/코너 주행은 통과했으며 휴게실/동적 장애물 시나리오는 미검증이다. 기본 모드는 STOP이다.
-**현재 상태:** 운영진 공식 baseline(world·예제 controller) 옆에 우리 controller `controllers/rescue_robot/`이 있다.
-센서 읽기·odometry·LiDAR 지도·A*·frontier 검출·SafetyMonitor까지 있고, 로봇은 기본적으로 **정지** 상태다.
-경로 추종, target 검출, 탐색 전략, 복귀는 각 담당이 구현한다(아래 "역할별 파일").
-
 ## 환경
 
 | 항목 | 값 |
@@ -35,7 +31,6 @@ TechWeek26/
 ├─ controllers/
 │   ├─ rescue_robot/          # 팀 실행 진입점, 경로 추종 및 안전 제어
 │   ├─ rescue_control/        # 이전 독립 시험 진입점 및 호환 모듈
-│   ├─ rescue_robot/          # 🆕 우리 controller (역할별 파일은 아래 표)
 │   ├─ tb3_teleop/            # 키보드 조종 (W/A/S/D)
 │   ├─ tb3_teleop_sensors/    # 조종 + 센서 값 Display (compass도 읽지만 대회에선 사용 금지)
 │   ├─ tb3_teleop_cam/        # 조종 + OpenCV 색 검출 창
@@ -45,7 +40,8 @@ TechWeek26/
 │   ├─ tb3_segmentation/      # OpenCV 색 검출 예제
 │   └─ tb3_ground_truth/      # Supervisor 정답 pose 데모 (대회 입력 금지)
 ├─ worlds/
-│   ├─ breakroom_control_test.wbt  # 공식 센서 시험 world의 복사본, rescue_robot 실행
+│   ├─ control_arena_test.wbt      # 3 m 직선·코너 주행 검증 world
+│   ├─ breakroom_control_test.wbt   # 공식 센서 시험 world 복사본, 제공된 시작 pose 포함
 │   ├─ apartment.wbt          # 약 13 m 아파트, 움직이는 사람, 색 사과 (64 ms)
 │   ├─ breakroom_teleop.wbt   # 휴게실 + 센서 Display (64 ms)
 │   ├─ breakroom_teleop_yolo.wbt, breakroom_ground_truth.wbt   (64 ms)
@@ -53,7 +49,6 @@ TechWeek26/
 │   ├─ empty.wbt
 │   ├─ apartment_rescue.wbt, breakroom_teleop_rescue.wbt       # 🆕 복사본, controller = rescue_robot
 │   └─ rescue_baseline.wbt    # 🆕 우리가 만든 2 m 검증 world
-├─ tests/                     # 🆕 Webots 없이 도는 unit test
 ├─ scripts/verify_baseline.py # 🆕 한 번에 검증
 ├─ protos/                    # 공식 world의 사과 PROTO
 ├─ models/YOLO/               # YOLO 가중치 자리 (commit하지 않음)
@@ -83,9 +78,11 @@ cd TechWeek26
 |---|---|
 | `worlds/apartment_rescue.wbt` | 공식 apartment 복사본 (약 13 m, 움직이는 사람), 시작 (-0.3, -7.5, 180°) |
 | `worlds/breakroom_teleop_rescue.wbt` | 공식 breakroom 복사본, 시작 (-1.265, 1.811, -24.3°) |
-| `worlds/rescue_baseline.wbt` | 우리가 만든 2 m 검증 world |
+| `worlds/rescue_baseline.wbt` | 우리가 만든 2 m 검증 world, 시작 (-0.5, -0.8, 0°) |
+| `worlds/control_arena_test.wbt` | 3 m 직선·코너 주행 시험, 시작 (0, 0, 0°) |
 
-세 world 모두 로봇 controller가 `rescue_robot`이다. 공식 원본 world는 수정하지 않았다(controller·시작 pose 줄만 다름).
+팀 시험 world는 모두 `rescue_robot`을 사용하며, 제공된 시작 pose를 `customData.start_pose`로 전달한다.
+이 값이 없으면 `config.START_POSE`의 rescue_baseline 시작점을 사용하므로 새 world에는 제공된 시작 pose를 지정한다.
 
 1. `controllers/rescue_robot/runtime.ini`의 `COMMAND`가 본인 Python 3.10 경로인지 확인 (다르면 로컬에서만 수정, commit 금지)
 2. Webots에서 위 world 중 하나를 열고 실행 → 기본 모드 `STOP`: 로봇은 정지, 콘솔에 2초마다 `[status] ... pose / lidar_front / map` 출력
@@ -126,7 +123,23 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
 - `reset_region((x, y), radius)`는 미터 단위 영역을 UNKNOWN으로 초기화하는 함수다.
   자동 recovery 연결과 동적 장애물 구분은 아직 구현되지 않았다.
 - 위치 추정은 encoder odometry이며 gyro 융합과 Scan Matching은 TODO다.
-  기본 모드는 계속 `STOP`이고, 경로 추종 및 자율 탐색은 별도 구현이 필요하다.
+  기본 모드는 계속 `STOP`이다. 경로 추종은 연결했고 자율 탐색 목표 선택은 TODO다.
+
+### Planning 연결 안내
+
+`inflate_obstacles(grid, radius_cells)`는 원본을 변경하지 않고 `UNKNOWN/FREE/OCCUPIED` 지도를 반환한다.
+로봇 반경 0.111m와 여유 거리 0.05m를 더한 0.161m를 0.05m 셀로 환산하면 3.22셀이며,
+안전하게 올림한 4셀 원형 영역을 `OCCUPIED`로 막는다. 영역 밖 미관측 셀은 `UNKNOWN`을 유지한다.
+`main.RETURN_HOME`은 이 지도를 A*에 전달하므로 경로 자체가 팽창 영역을 통과하지 않는다.
+
+- A* 기본값은 기존 팀 테스트 규격인 4방향이다. `connectivity=8`은 양옆 셀까지 검사해 모서리 통과를 막는다.
+- `allow_unknown=False`는 미관측 셀도 막는다. 복귀에서는 이 정책으로 먼저 계산하고, 경로가 없으면
+  미관측 통과 허용 계획을 시도한다. 실제 이동은 매 step LiDAR 안전 검사를 통과해야 한다.
+- 추가 비용지도는 `astar(..., costmap=비용지도)`에 별도로 전달한다. 254 이상 비용은 통과 금지이며,
+  0~253 비용은 경로 선호도에 반영한다. 비용지도를 점유지도 인자에 대신 넣으면 안 된다.
+- `frontier_score`와 `select_frontier`에는 `resolution=grid.resolution`, `origin=grid.origin`을 전달한다.
+- `planning.local_planner`는 보조 함수이며 main의 실제 주행은 `navigation_control`이 담당한다.
+  legacy `control.follow_waypoint`는 아직 TODO이고 main에서는 사용하지 않는다.
 
 ## Detection 사용법 (빨간 사과 2개)
 

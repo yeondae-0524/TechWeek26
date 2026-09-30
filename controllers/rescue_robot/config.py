@@ -17,85 +17,20 @@ HOME_TOLERANCE = 0.10
 STATUS_PRINT_PERIOD = 2.0
 
 # 기존 Localization과 Mapping은 제공된 시작 pose와 같은 좌표계를 사용합니다.
-# 선택한 breakroom 시험 world의 제공된 시작 pose입니다. 다른 world에서는 변경합니다.
-START_POSE = (-1.265, 1.811, math.radians(-24.3))
+# customData가 없는 경우의 기본값은 팀 검증 world rescue_baseline의 제공된 시작점입니다.
+# 다른 world는 제공된 customData.start_pose를 우선 사용합니다.
+START_POSE = (-0.5, -0.8, 0.0)
 START_POSE_FROM_CUSTOM_DATA = True
 
-# ---------------------------------------------------------------------------
-# Scheduling (seconds, never step counts: the official driving worlds use a
-# 64 ms basicTimeStep, some test worlds 32 ms [OFFICIAL]; research 10 §2.2)
-# ---------------------------------------------------------------------------
-MAP_UPDATE_PERIOD = 0.128   # s [INITIAL TUNING] one new scan into the grid
-DETECTION_PERIOD = 0.128    # s [INITIAL TUNING] camera read + detect_target()
+# 주기는 step 개수가 아닌 초 단위입니다. 공식 주행 world는 64ms, 일부 시험 world는 32ms입니다.
+MAP_UPDATE_PERIOD = 0.128
+DETECTION_PERIOD = 0.128
 
-# ---------------------------------------------------------------------------
-# Detection: mission targets = 2 red apples (team decision, 2026-09-30)
-# ---------------------------------------------------------------------------
-# Target LOCATIONS are never configured here: they are unknown by rule.
-REQUIRED_TARGETS = 2          # distinct targets to visit before RETURN_HOME
-
-# OpenCV HSV ranges (H 0-179, S 0-255, V 0-255), list of (lower, upper). A pixel
-# matching ANY range counts. Red needs two ranges because its hue wraps at 0/180.
-# Tune on real Webots frames: RESCUE_FRAME_DUMP + scripts/tune_hsv.py [INITIAL TUNING].
-# Tuned on breakroom_teleop_yolo.wbt frames (2026-09-30). The red cabinet panel there
-# is also red; it is rejected by the shape filters below, not by colour.
-TARGET_HSV_RANGES = [((0, 111, 60), (7, 255, 255)), ((179, 111, 60), (179, 255, 255))]
-# Other practice colours (examples, tune first):
-#   green ball [((35, 80, 40), (85, 255, 255))]   orange [((10, 120, 70), (25, 255, 255))]
-TARGET_MIN_AREA = 40.0        # px, smaller blobs are ignored [INITIAL TUNING]
-DETECTION_BLUR_KERNEL = 5     # odd, GaussianBlur kernel size (0 = off)
-DETECTION_MORPH_KERNEL = 3    # odd, opening kernel to remove speckles (0 = off)
-
-# Target size: official RedApple = bounding sphere diameter 0.1 m [OFFICIAL protos].
-TARGET_SIZE = 0.10            # m, diameter used for size-based distance (no height assumption)
-# Blob filters (reject furniture, books, paintings ...) - none of them assumes where
-# the apple lies. Practice worlds put apples on the floor, but the competition
-# placement is unknown, so the height filter is OFF by default.
-TARGET_MIN_FILL = 0.5         # blob area / enclosing circle area (apple ~0.8) [INITIAL TUNING]
-TARGET_ASPECT_RANGE = (0.5, 2.0)  # bounding box width / height [INITIAL TUNING]
-# Corner test: the outline simplified with cv2.approxPolyDP (epsilon = 1.5 % of the
-# perimeter) has 4 vertices for squares/trapezoids (red cabinet doors, panels) and
-# >= 8 for circles and apples (with stem) at every size. Fill alone cannot separate
-# them: a square fills 0.64 of its enclosing circle, an apple with stem ~0.65-0.7.
-TARGET_MAX_CORNERS = 6        # blobs with this many vertices or fewer are rejected
-TARGET_MAX_RANGE = 4.0        # m, farther estimates are ignored [INITIAL TUNING]
-# Blobs closer than this to the image border are ignored: a cut-off object has an
-# unreliable shape/size (e.g. a red cabinet at the left edge). It is detected once
-# it is fully in view.
-TARGET_BORDER_MARGIN = 2      # px
-# (min, max) height of the apple centre above the floor [m], or None = any height.
-# Only set this if the organizers confirm where targets can be, e.g. (0.0, 0.2) = floor.
-TARGET_HEIGHT_RANGE = None
-
-# Camera (official extensionSlot Camera): 640x480, horizontal FOV 1.0472 rad,
-# robot frame (0.02, 0, 0.073), looking forward, no tilt [OFFICIAL/DERIVED].
-CAMERA_HFOV = 1.0472          # rad
-CAMERA_OFFSET = (0.02, 0.0)   # (x, y) in the robot frame [m]
-CAMERA_HEIGHT = 0.073         # m above the floor
-
-# Multi-frame confirmation and de-duplication (research 07 §4, §6) [INITIAL TUNING]
-TRACK_WINDOW = 5              # last N detection cycles
-TRACK_MIN_HITS = 3            # seen in >= M of them -> confirmed
-TRACK_DEDUP_RADIUS = 0.30     # m, observations closer than this = same target
-TRACK_RANGE_ERROR = 0.15      # relative size-distance error -> association radius grows with range
-TRACK_MAX_SPREAD = 0.10       # m (grows with range the same way) max position std to confirm
-TRACK_FORGET_S = 3.0          # s, a not yet confirmed target survives short occlusions
-# Arrival: robot centre within this distance of a confirmed target counts as a visit.
-# [DAY-OF] replace with the official arrival rule when the organizers answer.
-TARGET_ARRIVAL_DISTANCE = 0.30  # m [INITIAL TUNING]
-
-# ---------------------------------------------------------------------------
-# Occupancy grid
-# ---------------------------------------------------------------------------
-GRID_RESOLUTION = 0.05  # m / cell
-# The grid is centred on the start pose. Official apartment.wbt spans ~12.4 x
-# 13.1 m and its robot starts near an edge (-0.3, -7.5) [OFFICIAL], so the
-# grid must be ~2x the world size: 26 m covers any ~13 m world from any start.
-GRID_WIDTH = 520        # number of columns (x direction) -> 26.0 m  [DAY-OF]
-GRID_HEIGHT = 520       # number of rows    (y direction) -> 26.0 m  [DAY-OF]
-
-# World coordinate of the lower-left corner of cell (0, 0).
-# None -> the grid is centred on START_POSE (map size is unknown in advance).
+# 0.05m 셀, 총 26×26m 지도입니다. 시작점 중심으로 배치해 가장자리 시작점도 포함합니다.
+GRID_RESOLUTION = 0.05
+GRID_WIDTH = 520
+GRID_HEIGHT = 520
+# None이면 시작점 중심, 지정하면 [0][0] 셀 왼쪽 아래의 미터 좌표입니다.
 GRID_ORIGIN = None
 
 # 공식 사양: 바퀴 반경, 바퀴 간격, 모터 최대 각속도입니다.
