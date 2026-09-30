@@ -95,13 +95,32 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
 
 | 담당 | 파일 | 지금 있는 것 | 할 일 |
 |---|---|---|---|
-| Mapping + Localization | `localization.py`, `mapping.py` | encoder odometry, LiDAR → 좌표 변환 → 이진 Occupancy Grid | gyro 보정, log-odds 지도, (가능하면) Scan Matching |
+| Mapping + Localization | `localization.py`, `mapping.py` | encoder odometry, LiDAR 좌표 변환, log-odds Occupancy Grid, 영역 초기화 | gyro 보정, 이동 중 지도 품질 검증, (가능하면) Scan Matching, 동적 장애물 필터링 |
 | Detection | `detection.py` | `detect_target(frame)` **stub** (항상 found=False) | 목표 검출 → `found/cx/direction/area` |
 | Planning | `planning.py` | A*, 장애물 inflation, frontier 검출·clustering | frontier 선택, 목표 접근 경로, 복귀 경로 |
 | Control + Local Planning | `control.py` | 바퀴 명령, SafetyMonitor(정지 영역·LiDAR 사각·후진 금지) | `follow_waypoint` 경로 추종, 장애물 회피, recovery |
 | 통합 | `main.py`, `devices.py`, `config.py` | state machine, 센서 읽기, 설정 | 모듈 연결, 모드 추가 |
 
 각 모듈은 Webots 없이 테스트한다: `tests/test_<모듈>.py`. 데이터 형식은 `AGENTS.md`의 "팀 규격"을 따른다.
+
+### 매핑 연결 안내
+
+기본 지도 갱신은 구현되어 있어 Planning/Detection 담당이 연결 작업을 시작할 수 있다.
+이동 중 지도 정확도와 전체 미션 완료까지 검증된 상태는 아니다.
+
+- `main.py`가 odometry pose와 LiDAR scan으로 `OccupancyGrid.insert_scan()`을 호출한다.
+- Planning 입력은 `OccupancyGrid.grid`이며 Python 리스트다. `grid[row][col]`에서 row는 +y,
+  col은 +x, 값은 `UNKNOWN=-1`, `FREE=0`, `OCCUPIED=1`이다. 미관측 칸을 빈 공간으로 취급하지 않는다.
+- 좌표 변환은 해당 지도 객체의 `world_to_grid(x, y)`와 `grid_to_world(row, col)`을 쓴다.
+  전자는 범위 밖 좌표도 반환하므로 `in_bounds()`로 확인한다. 후자는 셀 중심의 미터 좌표다.
+- Detection은 기존 `detect_target(frame)`과 `found/cx/direction/area` 규격으로 작업한다.
+  검출 결과를 지도상의 목표 위치로 변환하는 기능은 아직 구현되지 않았다.
+- log-odds는 관측 증거를 누적하고 상하한을 제한한다. 기존 장애물은 유효한 free ray의 반복 관측으로
+  해제되지만, 가려진 장애물이나 `inf`만 반환되는 곳은 자동으로 지워지지 않는다.
+- `reset_region((x, y), radius)`는 미터 단위 영역을 UNKNOWN으로 초기화하는 함수다.
+  자동 recovery 연결과 동적 장애물 구분은 아직 구현되지 않았다.
+- 위치 추정은 encoder odometry이며 gyro 융합과 Scan Matching은 TODO다.
+  기본 모드는 계속 `STOP`이고, 경로 추종 및 자율 탐색은 별도 구현이 필요하다.
 
 ## 작업 방식
 

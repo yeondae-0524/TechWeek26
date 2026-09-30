@@ -1,20 +1,25 @@
-"""Occupancy grid baseline.
+"""Log-odds occupancy grid mapping using the supplied pose estimate.
 
 Implemented:
     * grid creation (UNKNOWN / FREE / OCCUPIED), grid[row][col]
     * world_to_grid() / grid_to_world() / in_bounds()
     * LiDAR polar -> robot-local Cartesian -> world helpers (LiDAR mount offset)
-    * minimal binary scan insertion (M0, docs/research/03 §A, 10 §11.1):
+    * log-odds scan insertion with clamping (docs/research/03 §A):
       rays start at the LiDAR origin, only finite hits inside
       [min_range, max_range) are used, cells inside min_range are not cleared,
       each cell is updated once per scan and a hit wins over a miss.
-    Repeated free rays can clear an old OCCUPIED cell (no permanent ghosts).
-      Trusts the current pose estimate.
+    * hysteresis thresholds export log-odds as UNKNOWN / FREE / OCCUPIED
+    * repeated valid free rays can clear old OCCUPIED cells; occluded cells
+      and cells with only invalid/no-return measurements are not cleared
+    * reset_region() resets log-odds to zero, observation flags to False,
+      and grid cells to UNKNOWN
+
+The grid uses Python lists. Pose estimation is external; this module does not
+correct odometry or distinguish moving people from static obstacles.
 
 NOT implemented (TODO, feat/mapping):
-    * probabilistic update (log-odds + clamp), exported as UNKNOWN/FREE/OCCUPIED
     * scan matching / SLAM (pose correction from the map)
-    * dynamic obstacle (moving people) filtering, reset_region
+    * dynamic obstacle (moving people) filtering
 """
 
 import math
@@ -24,7 +29,7 @@ from interfaces import FREE, OCCUPIED, UNKNOWN
 
 
 class OccupancyGrid:
-    """grid[row][col] with row along +y and col along +x (see docs/INTERFACES.md)."""
+    """grid[row][col] with row along +y and col along +x (see interfaces.py)."""
 
     LOG_ODDS_HIT = 0.85
     LOG_ODDS_MISS = -0.40
