@@ -244,148 +244,54 @@ class RescueMission:
             self.transition(DONE, now, "waypoint 경로 도착")
         # 재계획 요청은 새 경로를 받을 때까지 정지 상태로 유지합니다.
 
-def do_explore(self, now, pose):
-    if config.BASELINE_MODE == "STOP":
-        self.controller.stop()
-        return
+    def do_explore(self, now, pose):
+        if config.BASELINE_MODE == "STOP":
+            self.controller.stop()
+            return
 
-    # 모든 목표 발견 완료
-    if self.tracker.all_visited():
-        self.transition(
-            RETURN_HOME,
-            now,
-            f"{self.tracker.visited_count()} targets visited"
-        )
-        return
+        if self.tracker.all_visited():
+            self.transition(RETURN_HOME, now,
+                            f"{self.tracker.visited_count()} targets visited")
+            return
 
+        track = self.tracker.nearest_unvisited(pose)
+        if track is not None:
+            self.approach_target_id = track["id"]
+            self.transition(APPROACH_TARGET, now, f"target #{track['id']}")
+            return
 
-    # =========================
-    # Target 발견 시 접근 우선
-    # =========================
+        if now > config.MISSION_TIME_LIMIT:
+            self.transition(RETURN_HOME, now, "mission timeout")
+            return
 
-    track = self.tracker.nearest_unvisited(pose)
+        if self.navigation.follower.path:
+            self.follow_navigation(now, pose)
+            return
 
-    if track is not None:
+        if self.grid is None:
+            self.controller.stop()
+            return
 
-        self.approach_target_id = track["id"]
+        frontier = planning.select_frontier(
+            self.grid.grid, pose, self.grid.resolution, self.grid.origin)
+        if frontier is None:
+            print("[explore] no frontier")
+            self.controller.stop()
+            return
 
-        self.transition(
-            APPROACH_TARGET,
-            now,
-            f"target #{track['id']}"
-        )
+        start = self.grid.world_to_grid(pose[0], pose[1])
+        radius = (config.ROBOT_RADIUS + config.SAFETY_MARGIN) / self.grid.resolution
+        costmap = planning.inflate_obstacles(
+            self.grid.grid, int(math.ceil(radius)))
+        path = planning.astar(
+            self.grid.grid, start, frontier, costmap, connectivity=8)
 
-        return
-
-
-
-    if now > config.MISSION_TIME_LIMIT:
-
-        self.transition(
-            RETURN_HOME,
-            now,
-            "mission timeout"
-        )
-
-        return
-
-
-
-    # =========================
-    # 기존 path 추종
-    # =========================
-
-    if self.navigation.follower.path:
-
-        self.follow_navigation(now, pose)
-
-        return
-
-
-
-    if self.grid is None:
-
-        self.controller.stop()
-
-        return
-
-
-
-    # =========================
-    # Frontier 선택
-    # =========================
-
-    frontier = planning.select_frontier(
-        self.grid.grid,
-        pose,
-        self.grid.resolution,
-        self.grid.origin
-    )
-
-
-    if frontier is None:
-
-        print("[explore] no frontier")
-
-        self.controller.stop()
-
-        return
-
-
-
-    # =========================
-    # A* 준비
-    # =========================
-
-    start = self.grid.world_to_grid(
-        pose[0],
-        pose[1]
-    )
-
-
-    radius = (
-        config.ROBOT_RADIUS +
-        config.SAFETY_MARGIN
-    ) / self.grid.resolution
-
-
-
-    costmap = planning.inflate_obstacles(
-        self.grid.grid,
-        int(math.ceil(radius))
-    )
-
-
-
-    # =========================
-    # 8방향 A*
-    # =========================
-
-    path = planning.astar(
-        self.grid.grid,
-        start,
-        frontier,
-        costmap,
-        connectivity=8
-    )
-
-
-
-    if path:
-
-        print(
-            f"[explore] frontier={frontier}, path={len(path)}"
-        )
-
-        self.set_navigation_grid_path(path)
-
-
-    else:
-
-        print("[explore] no path")
-
-        self.controller.stop()
-
+        if path:
+            print(f"[explore] frontier={frontier}, path={len(path)}")
+            self.set_navigation_grid_path(path)
+        else:
+            print("[explore] no path")
+            self.controller.stop()
 
     def do_approach_target(self, now, pose):
         """확정된 target 앞 standoff 지점까지 계획·추종하고 도착하면 방문 처리합니다."""
@@ -481,12 +387,12 @@ def do_explore(self, now, pose):
             start = self.grid.world_to_grid(pose[0], pose[1])
             goal = self.grid.world_to_grid(goal_xy[0], goal_xy[1])
             path = planning.astar(
-    self.grid.grid,
-    start,
-    goal,
-    costmap,
-    connectivity=8
-)
+                self.grid.grid,
+                start,
+                goal,
+                costmap,
+                connectivity=8,
+            )
             if not path:
                 self.navigation.set_path([])
                 self.navigation_status = "NO_PATH"
@@ -532,12 +438,12 @@ def do_explore(self, now, pose):
             start = self.grid.world_to_grid(pose[0], pose[1])
             goal = self.grid.world_to_grid(self.home_pose[0], self.home_pose[1])
             path = planning.astar(
-    self.grid.grid,
-    start,
-    goal,
-    costmap,
-    connectivity=8
-)
+                self.grid.grid,
+                start,
+                goal,
+                costmap,
+                connectivity=8,
+            )
             mode = "costmap"
             self.home_plan_pending = False
             print(f"[plan] 복귀 경로 ({mode}): {len(path)} cells")
