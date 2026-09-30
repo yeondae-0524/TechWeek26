@@ -5,6 +5,8 @@
 미션: 사전 지도 없음 · 시작 pose만 제공 · 목표물 위치 모름 → 탐색 → 구조 대상 식별 → 접근 → 시작점 복귀.
 정적 장애물·움직이는 사람과 충돌 금지.
 
+**현재 상태: Control 통합 개발 중.** `controllers/rescue_robot/main.py`에 encoder 위치 추정, waypoint 추종, LiDAR 안전 검사와 A* 복귀 경로 추종을 연결했다.
+탐색 목표 선택과 구조 대상 접근은 아직 미구현이다. 소형 시험 world에서 Webots 직선/코너 주행은 통과했으며 휴게실/동적 장애물 시나리오는 미검증이다. 기본 모드는 STOP이다.
 **현재 상태:** 운영진 공식 baseline(world·예제 controller) 옆에 우리 controller `controllers/rescue_robot/`이 있다.
 센서 읽기·odometry·LiDAR 지도·A*·frontier 검출·SafetyMonitor까지 있고, 로봇은 기본적으로 **정지** 상태다.
 경로 추종, target 검출, 탐색 전략, 복귀는 각 담당이 구현한다(아래 "역할별 파일").
@@ -26,11 +28,13 @@
 
 ## 폴더 구조
 
-공식 baseline(`kyu-rae-kim/PNU-TECHWEEK-260930` @ `383de18`)과 같은 구조다.
+공식 baseline(`kyu-rae-kim/PNU-TECHWEEK-260930` @ `383de18`)의 원본 구조를 유지하고 팀 controller와 테스트를 추가했다.
 
 ```text
 TechWeek26/
 ├─ controllers/
+│   ├─ rescue_robot/          # 팀 실행 진입점, 경로 추종 및 안전 제어
+│   ├─ rescue_control/        # 이전 독립 시험 진입점 및 호환 모듈
 │   ├─ rescue_robot/          # 🆕 우리 controller (역할별 파일은 아래 표)
 │   ├─ tb3_teleop/            # 키보드 조종 (W/A/S/D)
 │   ├─ tb3_teleop_sensors/    # 조종 + 센서 값 Display (compass도 읽지만 대회에선 사용 금지)
@@ -41,6 +45,7 @@ TechWeek26/
 │   ├─ tb3_segmentation/      # OpenCV 색 검출 예제
 │   └─ tb3_ground_truth/      # Supervisor 정답 pose 데모 (대회 입력 금지)
 ├─ worlds/
+│   ├─ breakroom_control_test.wbt  # 공식 센서 시험 world의 복사본, rescue_robot 실행
 │   ├─ apartment.wbt          # 약 13 m 아파트, 움직이는 사람, 색 사과 (64 ms)
 │   ├─ breakroom_teleop.wbt   # 휴게실 + 센서 Display (64 ms)
 │   ├─ breakroom_teleop_yolo.wbt, breakroom_ground_truth.wbt   (64 ms)
@@ -53,6 +58,7 @@ TechWeek26/
 ├─ protos/                    # 공식 world의 사과 PROTO
 ├─ models/YOLO/               # YOLO 가중치 자리 (commit하지 않음)
 ├─ docs/research/             # 알고리즘·공식 환경 조사, 목표 architecture, 구현 로드맵
+├─ tests/                     # 순수 Python 단위 및 main 통합 테스트
 ├─ AGENTS.md                  # 작업 규칙 (사람·AI 공통, 먼저 읽기)
 └─ README.md
 ```
@@ -121,6 +127,22 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
   자동 recovery 연결과 동적 장애물 구분은 아직 구현되지 않았다.
 - 위치 추정은 encoder odometry이며 gyro 융합과 Scan Matching은 TODO다.
   기본 모드는 계속 `STOP`이고, 경로 추종 및 자율 탐색은 별도 구현이 필요하다.
+
+## Control 주행 시험
+
+[한글 실행 안내](controllers/rescue_robot/README.md)에 모드, 좌표계, 팀 연결 API와 검증 범위를 정리했다.
+주 실행 파일은 `controllers/rescue_robot/main.py`이고, 순수 주행 로직은 `navigation_control.py`에 있다.
+
+Webots를 실행하는 PowerShell에서 다음을 설정하고 `worlds/control_arena_test.wbt`를 연다.
+
+```powershell
+$env:RESCUE_MODE = 'NAV_TEST'
+$env:RESCUE_WAYPOINTS = '[[1,0],[1,1],[0,1]]'
+```
+
+시험 waypoint는 시작점 기준 미터 좌표이며, 주행 가능한 시험 공간에서 사용한다.
+장애물이 잠깐 막으면 정지 후 경로를 재개하고, 계속 막히면 Planner에 재계획을 요청한다.
+전체 구조 미션을 자동 수행하는 완성 controller는 아직 아니다.
 
 ## 작업 방식
 
