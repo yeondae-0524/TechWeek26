@@ -161,6 +161,21 @@ class SafetyTests(unittest.TestCase):
         self.assertGreater(abs(wrap_angle(heading + pi/2)), 0.3)
         self.assertIsNone(escape_heading(scan(hits={i: inf for i in range(360)})))
 
+    def test_escape_heading_moves_away_from_near_points(self):
+        from controllers.rescue_robot.navigation_control import escape_heading
+        # 전방(180)이 가장 트였어도 오른쪽 앞 50°에 가까운 점이 있으면 그쪽으로 가지 않습니다.
+        hits = {i: 1.0 for i in range(360)}
+        for i in range(160, 201):
+            hits[i] = 3.0
+        hits[180+50] = 0.15
+        heading = escape_heading(scan(hits=hits))
+        self.assertIsNotNone(heading)
+        near = -50*pi/180   # index 230 = 로봇 frame 오른쪽 앞 약 50° (LiDAR offset으로 조금 다름)
+        self.assertGreaterEqual(abs(wrap_angle(heading - near)), pi/2 - 0.1)
+        # 참고: 지금 방향(전방)으로 바로 직진하면 안전 필터가 막습니다.
+        self.assertIn(self.monitor.filter(0.05, 0, scan(hits=hits), 0)[2],
+                      ('STOP', 'PREDICTED_COLLISION'))
+
     def test_forward_prediction(self):
         self.assertEqual(self.monitor.filter(0.15,0,scan(hits={180:0.30}),0)[2], 'PREDICTED_COLLISION')
 

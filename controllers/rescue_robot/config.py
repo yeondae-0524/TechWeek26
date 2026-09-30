@@ -181,6 +181,8 @@ ESCAPE_DISTANCE = 0.15          # m, 이만큼 전진하면 다시 계획합니�
 ESCAPE_TIMEOUT = 12.0           # s, 회전(~3 s)+SLOW 감속 전진(~6 s) 전체 제한 [INITIAL TUNING]
 ESCAPE_HALF_ANGLE = math.radians(20)   # 트인 방향을 볼 부채꼴 반각 [INITIAL TUNING]
 ESCAPE_HEADING_TOLERANCE = 0.15        # rad [INITIAL TUNING]
+ESCAPE_NEAR_MARGIN = 0.08       # m, 안전 반경 밖 이 거리 안의 점은 뒤쪽에 두는 방향만 고릅니다 [INITIAL TUNING]
+ESCAPE_MAX_FAILURES = 3         # 움직이지 못한 탈출이 연속 이만큼이면 탈출을 멈춥니다 [INITIAL TUNING]
 
 def navigation_config():
     """공통 설정을 순수 Python 주행 모듈에 전달합니다. 숫자를 중복 저장하지 않습니다."""
@@ -201,7 +203,7 @@ def navigation_config():
         slow_margin=NAV_SLOW_MARGIN, slow_ratio=NAV_SLOW_RATIO,
         min_points=SAFETY_MIN_POINTS, prediction_time=NAV_PREDICTION_TIME,
         prediction_step=NAV_PREDICTION_STEP, scan_timeout=NAV_SCAN_TIMEOUT,
-        observation_half_angle=NAV_OBSERVATION_HALF_ANGLE, escape_half_angle=ESCAPE_HALF_ANGLE,
+        observation_half_angle=NAV_OBSERVATION_HALF_ANGLE, escape_half_angle=ESCAPE_HALF_ANGLE, escape_near_margin=ESCAPE_NEAR_MARGIN,
         spin_clearance=SAFETY_SPIN_CLEARANCE, wait_timeout=NAV_WAIT_TIMEOUT,
         progress_timeout=NAV_PROGRESS_TIMEOUT, progress_distance=NAV_PROGRESS_DISTANCE,
     )

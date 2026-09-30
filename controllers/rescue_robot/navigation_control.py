@@ -141,6 +141,7 @@ def escape_heading(scan, config=DEFAULT):
     config.escape_half_angle 부채꼴마다 관측된 점까지의 최소 거리를 보고, 관측이 없는
     광선(inf)은 최대 거리로 봅니다. 부채꼴 안에 관측 광선이 하나도 없으면 후보에서 뺍니다
     (UNKNOWN_SPACE와 같은 규칙). 후진은 하지 않으므로 방향만 고릅니다.
+    가까운 점(안전 반경 + escape_near_margin 안)에 다가가는 방향도 뺍니다.
     """
     c = config
     if scan is None or len(scan.ranges) != c.lidar_count:
@@ -150,11 +151,16 @@ def escape_heading(scan, config=DEFAULT):
         angle = wrap_angle(c.lidar_first_angle+c.lidar_direction*i*c.lidar_fov/c.lidar_count)
         observed = isfinite(d) and c.lidar_min <= d <= c.lidar_max
         rays.append((angle, d if observed else c.lidar_max, observed))
+    # 가까운 점이 모두 뒤쪽(90° 이상)에 오는 방향만 후보입니다. 그래야 직진할수록 멀어집니다.
+    near = [atan2(py, px) for px, py in scan.points(c)
+            if hypot(px, py) <= c.robot_radius+c.safety_margin+c.escape_near_margin]
     scores = []
     for center, _, _ in rays:
         sector = [(d, seen) for a, d, seen in rays
                   if abs(wrap_angle(a-center)) <= c.escape_half_angle]
-        scores.append(min(d for d, _ in sector) if any(seen for _, seen in sector) else None)
+        away = all(abs(wrap_angle(center-b)) >= pi/2 for b in near)
+        scores.append(min(d for d, _ in sector)
+                      if away and any(seen for _, seen in sector) else None)
     valid = [score for score in scores if score is not None]
     if not valid:
         return None

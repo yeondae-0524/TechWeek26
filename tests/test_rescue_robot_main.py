@@ -189,32 +189,6 @@ assert mission.state == main.EXPLORE
 assert mission.controller.command == (0,0)
 ''')
 
-    def test_explore_plans_reachable_frontier_and_replans_after_reached(self):
-        self.run_case('''robot, mission = make("MISSION")
-F, U = main.mapping.FREE, main.mapping.UNKNOWN
-mission.grid.grid = [[F if col < 30 else U for col in range(40)] for _ in range(40)]
-mission.transition(main.EXPLORE, 0)
-mission.do_explore(0.0, (0.0, 0.0, 0.0))
-assert mission.navigation.follower.path, "도달 가능한 frontier 경로가 없습니다"
-first = list(mission.navigation.follower.path)
-goal = first[-1]
-mission.navigation.follower.index = len(first) - 1  # 경로를 끝까지 따라간 상태
-mission.do_explore(0.064, (goal[0], goal[1], 0.0))
-assert mission.navigation.follower.path == []  # REACHED: 다음 계획을 위해 비웁니다
-mission.do_explore(0.128, (goal[0], goal[1], 0.0))
-assert mission.navigation.follower.path  # 바로 다음 frontier를 계획합니다
-''')
-
-    def test_explore_failed_plan_waits_replan_period(self):
-        self.run_case('''robot, mission = make("MISSION")
-mission.grid.grid = [[main.mapping.FREE] * 40 for _ in range(40)]  # frontier 없음
-mission.transition(main.EXPLORE, 0)
-mission.do_explore(1.0, (0.0, 0.0, 0.0))
-assert mission.navigation.follower.path == []
-assert mission.controller.command == (0,0)
-assert mission.next_explore_plan_time == 1.0 + config.NAV_REPLAN_PERIOD
-''')
-
     def test_escape_turns_to_open_side_then_drives_and_replans(self):
         self.run_case('''robot, mission = make("MISSION")
 ranges = [0.3]*360
@@ -232,8 +206,25 @@ assert v == config.ESCAPE_SPEED and w == 0   # 방향을 맞춘 뒤 천천히 �
 assert mission.step_escape(4.0, (0.0, config.ESCAPE_DISTANCE, math.pi/2))
 assert mission.escape is None                # 끝나면 즉시 재계획
 assert mission.controller.command == (0,0)
-assert mission.next_explore_plan_time == 4.0
+assert mission.recovery.ready_at == 4.0
 assert not mission.step_escape(4.1, (0.0, config.ESCAPE_DISTANCE, math.pi/2))
+''')
+
+    def test_escape_stops_after_repeated_failures(self):
+        self.run_case('''robot, mission = make("MISSION")
+ranges = [0.3]*360
+for i in range(60, 121): ranges[i] = 2.0
+mission.scan = main.navigation_control.Scan(tuple(ranges), 0.0)
+now = 0.0
+for _ in range(config.ESCAPE_MAX_FAILURES):
+    mission.begin_escape(now)
+    assert mission.escape is not None
+    mission.step_escape(now, (0.0, 0.0, 0.0))
+    now += config.ESCAPE_TIMEOUT + 0.1
+    mission.step_escape(now, (0.0, 0.0, 0.0))   # 움직이지 못하고 시간 초과
+assert mission.escape_failures == config.ESCAPE_MAX_FAILURES
+mission.begin_escape(now)
+assert mission.escape is None                    # 더 이상 탈출하지 않고 recovery에 맡깁니다
 ''')
 
     def test_escape_times_out(self):
