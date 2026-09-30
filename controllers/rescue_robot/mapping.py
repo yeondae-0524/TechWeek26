@@ -165,6 +165,29 @@ class OccupancyGrid:
     def count(self, value):
         return sum(row.count(value) for row in self.grid)
 
+    def clearance_grid(self, radius):
+        """Copy occupancy with a hard circular clearance band around obstacles.
+
+        Include the occupied cell's half diagonal, so discretisation never
+        understates the supplied physical clearance. Unknown stays unknown
+        unless it lies inside that band. The stored map is never changed.
+        """
+        if not math.isfinite(radius) or radius < 0:
+            raise ValueError("clearance radius must be finite and nonnegative")
+        cells = np.asarray(self.grid)
+        occupied = cells == OCCUPIED
+        blocked = occupied.copy()
+        cell_radius = radius / self.resolution + math.sqrt(2) / 2
+        extent = math.ceil(cell_radius)
+        for dr in range(-min(extent, self.height - 1), min(extent, self.height - 1) + 1):
+            for dc in range(-min(extent, self.width - 1), min(extent, self.width - 1) + 1):
+                if dr * dr + dc * dc > cell_radius * cell_radius:
+                    continue
+                r0, r1 = max(0, dr), min(self.height, self.height + dr)
+                c0, c1 = max(0, dc), min(self.width, self.width + dc)
+                blocked[r0:r1, c0:c1] |= occupied[r0 - dr:r1 - dr, c0 - dc:c1 - dc]
+        return np.where(blocked, OCCUPIED, cells).tolist()
+
     def save_pgm(self, path):
         """Debug dump: black = OCCUPIED, white = FREE, grey = UNKNOWN. Top row = max y."""
         shade = {UNKNOWN: 128, FREE: 255, OCCUPIED: 0}

@@ -1,8 +1,8 @@
 """TurtleBot3 구조 미션의 실행 진입점입니다.
 
 매 step: 센서 → 기존 Localization → Mapping/Detection → 경로 추종 → 안전 검사.
-NAV_TEST에서는 명시적으로 받은 waypoint를 추종합니다. MISSION에서는 팀 Planner가
-전달한 경로와 복귀 A* 경로를 추종합니다. 탐색 목표 선택과 대상 접근은 아직 TODO입니다.
+NAV_TEST에서는 명시적으로 받은 waypoint를 추종합니다. MISSION에서는 프런티어 탐색,
+카메라 관측, 제한된 재계획, 대상 접근 및 복귀 A* 경로를 실행합니다.
 기본 STOP에서는 모터를 항상 정지시킵니다. 금지 센서는 사용하지 않습니다.
 """
 import json
@@ -17,6 +17,8 @@ import detection
 import mapping
 import planning
 import navigation_control
+from camera_coverage import CameraCoverageGrid
+from recovery import RecoveryLadder, reachable_cells
 from devices import DeviceError, Devices
 from interfaces import empty_target, make_pose
 from localization import Localizer
@@ -67,6 +69,16 @@ class RescueMission:
         self.replan_requested = False
         self.last_navigation_status = None
         self.grid = None
+        self.camera_coverage = None
+        self.last_camera_time = None
+        self.coverage_timer = Periodic(min(config.STATUS_PRINT_PERIOD,
+                                           config.CAMERA_HFOV / (2 * config.MAX_ANGULAR_SPEED)))
+        self.recovery = RecoveryLadder(
+            replan_delay=config.NAV_REPLAN_PERIOD,
+            blacklist_duration=config.NAV_PROGRESS_TIMEOUT,
+            blacklist_radius=config.NAV_PROGRESS_DISTANCE)
+        self.explore_goal = None
+        self.view_scan_remaining = None
         self.lidar_angles = [mapping.lidar_angle(i, d.lidar_resolution, d.lidar_fov)
                              for i in range(d.lidar_resolution)]
         # 예상과 다른 센서 사양으로 잘못된 각도를 사용하지 않도록 정지합니다.
@@ -118,7 +130,14 @@ class RescueMission:
                                   self.devices.lidar_max_range, min_range=self.devices.lidar_min_range)
         if self.detection_timer.due(now):
             started_detection = time.perf_counter()
-            self.target, blobs = detection.detect(self.devices.read_camera_frame())
+            frame = self.devices.read_camera_frame()
+            self.target, blobs = detection.detect(frame)
+            if frame is not None and frame.size:
+                self.last_camera_time = now
+                if (self.camera_coverage is not None and encoders is not None
+                        and ranges is not None and self.lidar_profile_valid
+                        and self.coverage_timer.due(now)):
+                    self.camera_coverage.update(pose, frame_valid=True)
             self.detection_timer_stats.add(time.perf_counter() - started_detection)
             for track in self.tracker.update(now, pose, blobs):
                 print(f"[detection] CONFIRMED target #{track['id']} at "
@@ -176,11 +195,14 @@ class RescueMission:
     def transition(self, new_state, now, reason=""):
         print(f"[state] {self.state} -> {new_state}" + (f" ({reason})" if reason else ""))
         # 목적이 바뀌면 이전 목적지의 경로를 계속 실행하지 않습니다.
-        if new_state in (RETURN_HOME, APPROACH_TARGET, DONE):
+        if new_state in (EXPLORE, RETURN_HOME, APPROACH_TARGET, DONE):
             self.navigation.set_path([])
             self.replan_requested = False
             self.navigation_status = "NO_PATH"
             self.controller.stop()
+            self.recovery.reset()
+            self.explore_goal = None
+            self.view_scan_remaining = None
         if new_state == RETURN_HOME:
             self.home_path = None
             self.home_plan_pending = False
@@ -223,6 +245,10 @@ class RescueMission:
             self.home_pose[0], self.home_pose[1], config.GRID_WIDTH, config.GRID_HEIGHT,
             config.GRID_RESOLUTION) if config.GRID_ORIGIN is None else mapping.OccupancyGrid(
             config.GRID_WIDTH, config.GRID_HEIGHT, config.GRID_RESOLUTION, config.GRID_ORIGIN)
+        self.camera_coverage = CameraCoverageGrid(
+            self.grid, hfov=config.CAMERA_HFOV,
+            max_range=min(config.TARGET_MAX_RANGE, config.LIDAR_MAX_RANGE),
+            camera_offset=config.CAMERA_OFFSET, footprint_radius=config.ROBOT_RADIUS)
         print(f"[main] home_pose={fmt_pose(self.home_pose)} ({self.start_pose_source}), mode={config.BASELINE_MODE}")
         self.print_lidar_check()
         if config.BASELINE_MODE == "CONTROL_TEST":
@@ -264,34 +290,103 @@ class RescueMission:
             self.transition(RETURN_HOME, now, "mission timeout")
             return
 
+        if self.view_scan_remaining is not None:
+            self.scan_frontier_view(now, pose)
+            return
+
         if self.navigation.follower.path:
-            self.follow_navigation(now, pose)
+            status = self.follow_navigation(now, pose)
+            if status == "REPLAN_REQUIRED":
+                self.fail_exploration(now)
+            elif status == "REACHED":
+                self.set_navigation_path([])
+                self.view_scan_remaining = 2 * math.pi
+                self.view_scan_yaw = pose[2]
+                self.view_scan_deadline = now + config.NAV_PROGRESS_TIMEOUT
+                self.recovery.stage = "OBSERVE"
+                print("[coverage] frontier observation started")
             return
 
+        self.controller.stop()
         if self.grid is None:
-            self.controller.stop()
+            return
+        if now < self.recovery.ready_at:
             return
 
-        frontier = planning.select_frontier(
-            self.grid.grid, pose, self.grid.resolution, self.grid.origin)
-        if frontier is None:
-            print("[explore] no frontier")
-            self.controller.stop()
+        safe_grid, start = self.exploration_grid(pose)
+        if self.explore_goal is None:
+            reachable = reachable_cells(safe_grid, start)
+            candidates = [cell for cell in planning.find_frontiers(self.grid.grid)
+                          if cell in reachable
+                          and not self.recovery.excluded(self.grid.grid_to_world(*cell), now)]
+            if not candidates:
+                self.recovery.stage = "SAFE_STOP"
+                self.recovery.ready_at = now + config.NAV_REPLAN_PERIOD
+                return
+            # Prefer camera-unseen frontiers, then retain the planner's utility.
+            self.explore_goal = max(candidates, key=lambda cell: (
+                not self.camera_coverage.seen[cell],
+                planning.frontier_score(cell, pose, self.grid.grid,
+                                        self.grid.resolution, self.grid.origin)))
+            self.recovery.begin(self.grid.grid_to_world(*self.explore_goal))
+            # Planning runs on a later stopped step, not with a stale motor command.
             return
 
-        start = self.grid.world_to_grid(pose[0], pose[1])
-        radius = (config.ROBOT_RADIUS + config.SAFETY_MARGIN) / self.grid.resolution
-        costmap = planning.inflate_obstacles(
-            self.grid.grid, int(math.ceil(radius)))
-        path = planning.astar(
-            self.grid.grid, start, frontier, costmap, connectivity=8)
+        frontier = self.explore_goal
+        path = []
+        if (self.grid.in_bounds(*start) and safe_grid[start[0]][start[1]] == mapping.FREE
+                and safe_grid[frontier[0]][frontier[1]] == mapping.FREE):
+            path = planning.astar(safe_grid, start, frontier,
+                                  allow_unknown=False, connectivity=4)
 
         if path:
             print(f"[explore] frontier={frontier}, path={len(path)}")
             self.set_navigation_grid_path(path)
+            self.recovery.planned()
         else:
-            print("[explore] no path")
+            self.fail_exploration(now)
+
+    def exploration_grid(self, pose):
+        """Temporary clearance mask, shared by goal filtering and replanning."""
+        start = self.grid.world_to_grid(pose[0], pose[1])
+        safe_grid = self.grid.clearance_grid(config.ROBOT_RADIUS + config.SAFETY_MARGIN)
+        # The mandatory LiDAR blind zone leaves the robot's own footprint
+        # unknown. Allow that footprint in this temporary planning mask only.
+        footprint = math.ceil(config.ROBOT_RADIUS / self.grid.resolution)
+        for row in range(max(0, start[0] - footprint), min(self.grid.height, start[0] + footprint + 1)):
+            for col in range(max(0, start[1] - footprint), min(self.grid.width, start[1] + footprint + 1)):
+                if (safe_grid[row][col] == mapping.UNKNOWN and
+                        math.dist(self.grid.grid_to_world(row, col), pose[:2]) <= config.ROBOT_RADIUS):
+                    safe_grid[row][col] = mapping.FREE
+        return safe_grid, start
+
+    def fail_exploration(self, now):
+        self.set_navigation_path([])
+        self.recovery.fail(now)
+        if self.recovery.goal is None:
+            self.explore_goal = None
+        print(f"[recovery] {self.recovery.stage}, retries={self.recovery.attempts}")
+
+    def scan_frontier_view(self, now, pose):
+        """Observe all headings on arrival; final LiDAR safety may veto rotation."""
+        delta = math.atan2(math.sin(pose[2] - self.view_scan_yaw),
+                           math.cos(pose[2] - self.view_scan_yaw))
+        self.view_scan_remaining -= delta
+        self.view_scan_yaw = pose[2]
+        camera_fresh = (self.last_camera_time is not None and
+                        now - self.last_camera_time <= 2 * max(self.dt, config.DETECTION_PERIOD))
+        if self.view_scan_remaining <= 0 or now >= self.view_scan_deadline or not camera_fresh:
             self.controller.stop()
+            reason = ("complete" if self.view_scan_remaining <= 0 else
+                      "timeout" if now >= self.view_scan_deadline else "camera unavailable")
+            print(f"[coverage] frontier observation ended: {reason}")
+            if self.recovery.goal is not None:
+                self.recovery.exclude(self.recovery.goal, now)
+            self.recovery.reset()
+            self.explore_goal = None
+            self.view_scan_remaining = None
+            return
+        self.controller.set_velocity(0.0, config.NAV_ROTATE_SPEED)
 
     def do_approach_target(self, now, pose):
         """확정된 target 앞 standoff 지점까지 계획·추종하고 도착하면 방문 처리합니다."""
@@ -522,6 +617,9 @@ class RescueMission:
             if dump:
                 self.grid.save_pgm(dump)
         parts.append(f"target_found={self.target['found']}")
+        if self.camera_coverage is not None:
+            parts.append(f"camera_seen_free={self.camera_coverage.free_fraction():.1%}")
+        parts.append(f"recovery={self.recovery.stage}")
         det = self.detection_timer_stats.summary()
         if det:
             parts.append(f"det_ms med={det[0] * 1e3:.1f} max={det[2] * 1e3:.1f}")
