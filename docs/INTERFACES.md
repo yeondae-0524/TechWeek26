@@ -1,5 +1,9 @@
 # 공통 Interface 규격
 
+> 현재 플랫폼은 **TurtleBot3 Burger + LDS-01**이다. 데이터 규격(좌표계, grid, pose, target, path, waypoint)은 그대로 유지한다.
+> 아래 §1의 실측 수치는 이전 practice e-puck 월드 기록이다. 현재 사양·장착 오프셋은
+> [TURTLEBOT3_MIGRATION.md](TURTLEBOT3_MIGRATION.md)와 [research/09](research/09_WEBOTS_REFERENCES.md).
+
 모든 모듈은 이 규격을 따른다. 코드 정의: `controllers/rescue_robot/interfaces.py`.
 규격을 바꾸려면 **이 문서 + interfaces.py + tests/test_interfaces.py** 를 같이 바꾸고 팀에 공유한다.
 
@@ -12,14 +16,14 @@
 | `theta` 증가 방향 | **반시계(CCW, +z축 기준)** = 왼쪽 회전 시 증가. 범위 `(-pi, pi]` |
 | Webots `rotation 0 0 1 a` | 로봇 heading `theta = a` |
 
-검증 근거 (`scripts/verify_baseline.py --webots --mode CONTROL_TEST`, rescue_baseline.wbt):
+검증 근거 (이전 practice e-puck 월드에서 `--webots --mode CONTROL_TEST`로 측정한 기록 — TurtleBot3 수치 아님):
 
 - 시작 pose `(-0.5, -0.8, 0)`에서 forward → x 증가 (odom +0.060 m, GPS +0.059 m)
 - `rotate_left` 1.5 s → odom theta +64.6° (명령값 0.75 rad/s × 1.5 s = 64.5°). GPS 궤적도 CCW 회전과 일치
 - LiDAR 시작 거리: front 0.425 m(빨간 박스 면), left 0.280 m(low wall), back 0.500 m(arena 벽), right 0.200 m(arena 벽). world 배치에서 계산한 값과 정확히 일치
 
-> 주의: practice e-puck의 GPS는 turret에 달려 있어 로봇 중심보다 0.0095 m 뒤에 있다
-> (heading 0일 때 GPS x = pose x − 0.0095). GPS는 **디버그 전용**이며 localization 입력으로 쓰지 않는다.
+> 대회 규정상 GPS·Compass는 사용하지 않는다(운영진 확인). TurtleBot3 검증은 엔코더 odometry와
+> LiDAR 거리 변화(`[control-test] ... lidar_front=`)로 한다. 좌표 규칙 자체는 로봇과 무관하다.
 
 ## 2. Occupancy Grid
 
@@ -37,7 +41,7 @@ resolution = 0.05       # m / cell  (config.GRID_RESOLUTION)
 - **grid origin** `(ox, oy)` = cell `(0, 0)`의 **왼쪽 아래 모서리**의 world 좌표.
   - 기본값(`config.GRID_ORIGIN = None`)은 grid 중심이 `home_pose`에 오도록 자동 계산:
     `ox = home_x − GRID_WIDTH·res/2`, `oy = home_y − GRID_HEIGHT·res/2`
-- 크기: `GRID_WIDTH` = column 수(x), `GRID_HEIGHT` = row 수(y). 기본 160×160 = 8 m × 8 m
+- 크기: `GRID_WIDTH` = column 수(x), `GRID_HEIGHT` = row 수(y). 기본 400×400 = 20 m × 20 m
 
 ### World ↔ Grid 변환
 
@@ -97,12 +101,15 @@ waypoint = (x, y)       # world m
 - `set_velocity(v, w)`: v [m/s] 전진 +, w [rad/s] 반시계(왼쪽) +
 - wheel 속도 단위: rad/s (Webots RotationalMotor)
 
-## 7. LiDAR 각도 규칙 (practice robot, 실측)
+## 7. LiDAR 각도 규칙 (TurtleBot3 LDS-01)
 
 ```python
 angle_i = LIDAR_FIRST_ANGLE + LIDAR_ANGLE_DIRECTION * i * fov / N   # robot frame, 0 = 전방, + = 왼쪽
-# practice: LIDAR_FIRST_ANGLE = pi, LIDAR_ANGLE_DIRECTION = -1
+# LDS-01: LIDAR_FIRST_ANGLE = pi, LIDAR_ANGLE_DIRECTION = -1
 # -> index 0 = 후방, index N/4 = 왼쪽, N/2 = 전방, 3N/4 = 오른쪽 (시계방향 sweep)
+#    공식 예제 라벨 ranges[180]=Front, [90]=Left, [0]=Back, [270]=Right 와 일치 (sub-degree 정렬은 UNCONFIRMED)
+# LiDAR 원점 = robot frame LIDAR_MOUNT_OFFSET = (-0.03, 0): 거리값은 차축 중심이 아니라 LiDAR에서 잰 값
+# minRange 0.12 m 미만·maxRange 3.5 m 초과는 inf -> mapping에서 skip, safety에서 "free"로 취급하지 않음
 ```
 
 당일 LiDAR가 다르면 `config.py`의 두 값만 바꾸고, 부팅 로그 `[lidar] ranges: front=.. left=.. back=.. right=..`
