@@ -19,7 +19,7 @@ controllers/
     interfaces.py        #   공통 데이터 규격 (아래 "팀 규격")          [공용: 바꾸면 팀 합의]
     localization.py      #   위치 추정 (encoder odometry)               [Mapping + Localization]
     mapping.py           #   Occupancy Grid                             [Mapping + Localization]
-    detection.py         #   목표 검출 (현재 stub)                      [Detection]
+    detection.py         #   빨간 사과 검출 + TargetTracker             [Detection]
     planning.py          #   A*, inflation, frontier                    [Planning]
     control.py           #   바퀴 명령, SafetyMonitor, 경로 추종(TODO)   [Control + Local Planning]
     scheduling.py        #   초 단위 주기, step 시간 통계
@@ -38,7 +38,9 @@ docs/research/           # 알고리즘·공식 환경 조사 (00_RESEARCH_INDEX
 - **필수 센서**: wheel encoder, 2D LiDAR(`LDS-01`). **선택**: IMU(gyro/accelerometer).
 - **사용 금지**: **Compass, GPS**. Supervisor ground-truth pose(`tb3_ground_truth` 방식)와 Webots Camera Recognition은
   대회 controller의 입력으로 쓰지 않는다. `breakroom_ground_truth.wbt`는 데모 전용이다.
-- 사전 지도 없음, target 위치 모름(외형은 당일 공개), 시작 pose만 제공, target 방문 후 시작점 복귀,
+- **미션 target: 빨간 사과 2개** (2026-09-30 확정) → 2개 모두 방문 후 시작점 복귀. 사과 **위치는 모름**:
+  좌표를 코드·config에 넣지 않는다. 바닥에 있다고도 가정하지 않는다(`TARGET_HEIGHT_RANGE = None`).
+- 사전 지도 없음, 시작 pose만 제공, target 방문 후 시작점 복귀,
   정적 장애물·움직이는 사람과 충돌 금지.
 
 ## 공식 파일 취급

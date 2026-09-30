@@ -96,7 +96,7 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
 | 담당 | 파일 | 지금 있는 것 | 할 일 |
 |---|---|---|---|
 | Mapping + Localization | `localization.py`, `mapping.py` | encoder odometry, LiDAR → 좌표 변환 → 이진 Occupancy Grid | gyro 보정, log-odds 지도, (가능하면) Scan Matching |
-| Detection | `detection.py` | `detect_target(frame)` **stub** (항상 found=False) | 목표 검출 → `found/cx/direction/area` |
+| Detection | `detection.py` | 빨간 사과 검출(HSV + 모양·크기 필터, 크기로 거리 추정), `TargetTracker`(3/5 확인, 지도 위치, 중복 제거, 방문 표시) | 실제 Webots 화면으로 색 기준값 튜닝(`scripts/tune_hsv.py`), 가림·재탐색 |
 | Planning | `planning.py` | A*, 장애물 inflation, frontier 검출·clustering | frontier 선택, 목표 접근 경로, 복귀 경로 |
 | Control + Local Planning | `control.py` | 바퀴 명령, SafetyMonitor(정지 영역·LiDAR 사각·후진 금지) | `follow_waypoint` 경로 추종, 장애물 회피, recovery |
 | 통합 | `main.py`, `devices.py`, `config.py` | state machine, 센서 읽기, 설정 | 모듈 연결, 모드 추가 |
