@@ -6,9 +6,13 @@ Mission workflow (state machine):
                      |                                              ^
                      +------------(mission time limit)--------------+
 
-Every control step runs the same pipeline:
+Every control step runs the same pipeline (periods in seconds, config.py):
 
-    sensors -> localization -> mapping -> detection -> planning -> control
+    sensors -> localization -> mapping (MAP_UPDATE_PERIOD)
+            -> detection (DETECTION_PERIOD) -> planning -> control -> safety (last)
+
+Robot: TurtleBot3Burger + LDS-01 (docs/TURTLEBOT3_MIGRATION.md). Encoders and
+LiDAR are mandatory (fail closed), Compass / GPS / Supervisor pose are never used.
 
 BASELINE STATUS: exploration target selection, waypoint tracking and target
 approach are TODO. Those states hold the robot still instead of faking
@@ -18,6 +22,7 @@ behaviour. Set RESCUE_MODE=CONTROL_TEST to run a short drive-train check.
 import math
 import os
 import sys
+import time
 
 from controller import Robot
 
@@ -27,8 +32,9 @@ import detection
 import mapping
 import planning
 from devices import DeviceError, Devices
-from interfaces import make_pose
+from interfaces import empty_target, make_pose
 from localization import Localizer
+from scheduling import Periodic, StepTimer
 
 INITIALIZE = "INITIALIZE"
 EXPLORE = "EXPLORE"
@@ -60,28 +66,35 @@ class RescueMission:
         self.devices = Devices(robot, self.timestep)
         d = self.devices
 
+        custom_pose = d.read_start_pose()
+        self.start_pose = custom_pose if custom_pose is not None else make_pose(*config.START_POSE)
+        self.start_pose_source = "customData" if custom_pose is not None else "config.START_POSE"
         self.home_pose = None  # set in INITIALIZE, used by RETURN_HOME
-        self.localizer = Localizer(config.START_POSE, config.WHEEL_RADIUS,
+        self.localizer = Localizer(self.start_pose, config.WHEEL_RADIUS,
                                    config.AXLE_LENGTH, config.encoder_to_rad())
         self.controller = control.DiffDriveController(
             d.left_motor, d.right_motor, config.WHEEL_RADIUS, config.AXLE_LENGTH,
             config.MAX_WHEEL_SPEED, config.MAX_LINEAR_SPEED, config.MAX_ANGULAR_SPEED)
+        self.safety = control.SafetyMonitor.from_config(config)
         self.grid = None
-        self.lidar_angles = None
-        if d.lidar is not None:
-            n = d.lidar_resolution
-            self.lidar_angles = [mapping.lidar_angle(i, n, d.lidar_fov) for i in range(n)]
-        else:
-            print("[main] WARNING: no lidar -> mapping and emergency stop disabled")
+        n = d.lidar_resolution
+        self.lidar_angles = [mapping.lidar_angle(i, n, d.lidar_fov) for i in range(n)]
+
+        self.map_timer = Periodic(config.MAP_UPDATE_PERIOD)
+        self.detection_timer = Periodic(config.DETECTION_PERIOD)
+        self.step_timer = StepTimer()
 
         self.state = INITIALIZE
         self.state_start_time = 0.0
         self.step_count = 0
         self.last_status_time = -1e9
-        self.target = None
+        self.target = empty_target()
         self.found_targets = []  # TODO(feat/integration): target world positions
         self.home_path = None
+        self.home_plan_pending = False
         self.test_index = -1
+        self.safety_event = None
+        self.sensor_fault = None
 
     # ================================================================ loop
     def run(self):
@@ -89,24 +102,27 @@ class RescueMission:
             self.step()
 
     def step(self):
+        started = time.perf_counter()
         now = self.robot.getTime()
         self.step_count += 1
 
-        # 1. sensors
+        # 1. sensors (encoders + LiDAR every step: odometry and safety need them)
         encoders = self.devices.read_encoders()
         ranges = self.devices.read_lidar()
-        frame = self.devices.read_camera_frame()
         yaw_rate = self.devices.read_gyro_yaw_rate()
+        self.check_required_sensors(encoders, ranges)
 
-        # 2. localization
+        # 2. localization (encoder odometry; gyro is read but not fused yet)
         pose = self.localizer.update(encoders, yaw_rate, self.dt)
 
-        # 3. mapping
-        if self.grid is not None and ranges and self.step_count % config.MAP_UPDATE_PERIOD_STEPS == 0:
-            self.grid.insert_scan(pose, ranges, self.devices.lidar_fov, self.devices.lidar_max_range)
+        # 3. mapping (one new scan per MAP_UPDATE_PERIOD)
+        if self.grid is not None and ranges and self.map_timer.due(now):
+            self.grid.insert_scan(pose, ranges, self.devices.lidar_fov, self.devices.lidar_max_range,
+                                  min_range=self.devices.lidar_min_range)
 
-        # 4. detection
-        self.target = detection.detect_target(frame)
+        # 4. detection (camera frame only read when due)
+        if self.detection_timer.due(now):
+            self.target = detection.detect_target(self.devices.read_camera_frame())
 
         # 5 + 6. planning & control (per state)
         handler = {
@@ -119,15 +135,36 @@ class RescueMission:
         }[self.state]
         handler(now, pose)
 
-        # safety hook, always last
-        front = None
-        if ranges and self.lidar_angles:
-            front = control.min_front_distance(ranges, self.lidar_angles, config.EMERGENCY_FRONT_HALF_ANGLE)
-        was_active = self.controller.emergency_stop_active
-        if self.controller.apply_emergency_stop(front, config.EMERGENCY_STOP_DISTANCE) and not was_active:
-            print(f"[safety] EMERGENCY STOP: obstacle at {front:.3f} m in front")
+        # safety monitor, always last (raw scan, independent of the map)
+        self.apply_safety(now, encoders, ranges)
 
+        self.step_timer.add(time.perf_counter() - started)
         self.print_status(now, pose, ranges)
+
+    def check_required_sensors(self, encoders, ranges):
+        """Encoders and LiDAR are mandatory: log when their data becomes invalid."""
+        fault = None
+        if encoders is None and self.step_count > 1:  # NaN on the first step is normal
+            fault = "encoder data invalid"
+        elif ranges is None:
+            fault = "lidar data invalid"
+        if fault != self.sensor_fault:
+            print(f"[safety] {fault} -> STOP" if fault else "[safety] required sensors OK")
+            self.sensor_fault = fault
+
+    def apply_safety(self, now, encoders, ranges):
+        self.safety.update_scan(ranges, self.lidar_angles, now)
+        if encoders is None:  # no odometry -> never move (fail closed)
+            self.controller.stop()
+        v, w = self.controller.command
+        v2, w2, event = self.safety.filter(v, w, now)
+        if event is not None:
+            self.controller.set_velocity(v2, w2)
+        if event != self.safety_event:
+            if event is not None:
+                print(f"[safety] {event}: command ({v:+.3f} m/s, {w:+.2f} rad/s) -> "
+                      f"({v2:+.3f}, {w2:+.2f})")
+            self.safety_event = event
 
     def transition(self, new_state, now, reason=""):
         print(f"[state] {self.state} -> {new_state}" + (f"  ({reason})" if reason else ""))
@@ -137,14 +174,14 @@ class RescueMission:
     # ================================================================ states
     def do_initialize(self, now, pose):
         self.controller.stop()
-        self.home_pose = make_pose(*config.START_POSE)
+        self.home_pose = self.start_pose
         self.localizer.odometry.reset(self.home_pose)
-        if self.devices.lidar is not None:
-            self.grid = mapping.OccupancyGrid.centered_on(
-                self.home_pose[0], self.home_pose[1], config.GRID_WIDTH, config.GRID_HEIGHT,
-                config.GRID_RESOLUTION) if config.GRID_ORIGIN is None else mapping.OccupancyGrid(
-                config.GRID_WIDTH, config.GRID_HEIGHT, config.GRID_RESOLUTION, config.GRID_ORIGIN)
-        print(f"[main] home_pose = {fmt_pose(self.home_pose)}  mode = {config.BASELINE_MODE}")
+        self.grid = mapping.OccupancyGrid.centered_on(
+            self.home_pose[0], self.home_pose[1], config.GRID_WIDTH, config.GRID_HEIGHT,
+            config.GRID_RESOLUTION) if config.GRID_ORIGIN is None else mapping.OccupancyGrid(
+            config.GRID_WIDTH, config.GRID_HEIGHT, config.GRID_RESOLUTION, config.GRID_ORIGIN)
+        print(f"[main] home_pose = {fmt_pose(self.home_pose)} (from {self.start_pose_source})  "
+              f"mode = {config.BASELINE_MODE}")
         self.print_lidar_check()
         if config.BASELINE_MODE == "CONTROL_TEST":
             self.transition(CONTROL_TEST, now, "RESCUE_MODE=CONTROL_TEST")
@@ -179,11 +216,22 @@ class RescueMission:
             self.transition(DONE, now, f"home reached ({dist:.2f} m)")
             return
         if self.home_path is None and self.grid is not None:
+            if not self.home_plan_pending:
+                # Blocking A* below: deliver a stop command through robot.step() first.
+                self.controller.stop()
+                self.home_plan_pending = True
+                return
             radius = (config.ROBOT_RADIUS + config.SAFETY_MARGIN) / config.GRID_RESOLUTION
             inflated = planning.inflate_obstacles(self.grid.grid, radius)
-            self.home_path = planning.astar(inflated, self.grid.world_to_grid(pose[0], pose[1]),
-                                            self.grid.world_to_grid(self.home_pose[0], self.home_pose[1]))
-            print(f"[plan] home path: {len(self.home_path)} cells")
+            start = self.grid.world_to_grid(pose[0], pose[1])
+            goal = self.grid.world_to_grid(self.home_pose[0], self.home_pose[1])
+            # Known-only first; optimistic (unknown allowed) only as a fallback (research 08 §2.3).
+            self.home_path = planning.astar(inflated, start, goal, allow_unknown=False)
+            mode = "known-only"
+            if not self.home_path:
+                self.home_path = planning.astar(inflated, start, goal, allow_unknown=True)
+                mode = "unknown allowed"
+            print(f"[plan] home path ({mode}): {len(self.home_path)} cells")
         # TODO(feat/control): track self.home_path waypoint by waypoint.
         self.controller.follow_waypoint(pose)
 
@@ -200,31 +248,44 @@ class RescueMission:
         getattr(self.controller, primitive)()
         if index != self.test_index:
             self.test_index = index
-            gps = self.devices.read_gps_debug()
-            gps_txt = f"  gps_debug=({gps[0]:+.3f}, {gps[1]:+.3f})" if gps else ""
-            print(f"[control-test] {label:<7} odom={fmt_pose(pose)}{gps_txt}")
+            # Commanded motion vs. LiDAR range change (no GPS: organizer rule).
+            front = self.lidar_range_at(0.0)
+            front_txt = f"  lidar_front={front:.3f}" if front is not None else ""
+            print(f"[control-test] {label:<7} odom={fmt_pose(pose)}{front_txt}")
 
     # ================================================================ logging
+    def lidar_range_at(self, target_angle, ranges=None):
+        """Range of the ray closest to target_angle (robot frame, from the LiDAR), or None."""
+        ranges = ranges if ranges is not None else self.devices.read_lidar()
+        if not ranges:
+            return None
+        i = min(range(len(ranges)), key=lambda k: abs(math.atan2(
+            math.sin(self.lidar_angles[k] - target_angle), math.cos(self.lidar_angles[k] - target_angle))))
+        return ranges[i]
+
     def print_lidar_check(self):
         """One-line range check in the 4 robot directions (axis verification)."""
         ranges = self.devices.read_lidar()
-        if not ranges or not self.lidar_angles:
+        if not ranges:
             return
-        out = []
-        for name, target_angle in (("front", 0.0), ("left", math.pi / 2), ("back", math.pi), ("right", -math.pi / 2)):
-            i = min(range(len(ranges)), key=lambda k: abs(math.atan2(
-                math.sin(self.lidar_angles[k] - target_angle), math.cos(self.lidar_angles[k] - target_angle))))
-            out.append(f"{name}={ranges[i]:.3f}")
-        print("[lidar] ranges: " + " ".join(out))
+        out = [f"{name}={self.lidar_range_at(a, ranges):.3f}"
+               for name, a in (("front", 0.0), ("left", math.pi / 2), ("back", math.pi), ("right", -math.pi / 2))]
+        print("[lidar] ranges (from LiDAR origin): " + " ".join(out))
 
     def print_status(self, now, pose, ranges):
         if now - self.last_status_time < config.STATUS_PRINT_PERIOD:
             return
         self.last_status_time = now
         parts = [f"t={now:6.1f}s", f"state={self.state}", f"pose={fmt_pose(pose)}"]
-        gps = self.devices.read_gps_debug()
-        if gps:
-            parts.append(f"gps_debug=({gps[0]:+.3f}, {gps[1]:+.3f})")
+        front = self.lidar_range_at(0.0, ranges) if ranges else None
+        if front is not None:
+            parts.append(f"lidar_front={front:.3f}")
+        timing = self.step_timer.summary()
+        if timing:
+            med, p95, worst, _ = timing
+            parts.append(f"step_ms med={med * 1e3:.1f} p95={p95 * 1e3:.1f} max={worst * 1e3:.1f}")
+        if self.map_timer.missed:
+            parts.append(f"map_missed={self.map_timer.missed}")
         if self.grid is not None:
             frontiers = planning.find_frontiers(self.grid.grid)
             clusters = planning.cluster_frontiers(frontiers, min_size=3)
@@ -234,6 +295,8 @@ class RescueMission:
             if dump:
                 self.grid.save_pgm(dump)
         parts.append(f"target_found={self.target['found']}")
+        if self.safety_event or self.sensor_fault:
+            parts.append(f"safety={self.sensor_fault or self.safety_event}")
         print("[status] " + " | ".join(parts))
 
 

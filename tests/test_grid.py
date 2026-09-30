@@ -2,6 +2,7 @@ import math
 import unittest
 
 import _path  # noqa: F401
+import config
 import mapping
 from interfaces import FREE, OCCUPIED, UNKNOWN
 
@@ -80,7 +81,9 @@ class TestLidarHelpers(unittest.TestCase):
         g = mapping.OccupancyGrid.centered_on(0.0, 0.0, 40, 40, 0.05)
         ranges = [0.52] * 360  # circular wall at 0.52 m -> nothing observed beyond it
         g.insert_scan((0.0, 0.0, 0.0), ranges, 2 * math.pi, 1.0)
-        self.assertEqual(g.get(*g.world_to_grid(0.52, 0.0)), OCCUPIED)
+        # rays start at the LiDAR origin (TurtleBot3: 0.03 m behind the axle)
+        self.assertEqual(g.get(*g.world_to_grid(0.52 + config.LIDAR_MOUNT_OFFSET[0],
+                                                config.LIDAR_MOUNT_OFFSET[1])), OCCUPIED)
         self.assertEqual(g.get(*g.world_to_grid(0.25, 0.0)), FREE)
         self.assertEqual(g.get(*g.world_to_grid(0.0, 0.0)), FREE)
         self.assertEqual(g.get(*g.world_to_grid(0.7, 0.0)), UNKNOWN)  # behind the hit

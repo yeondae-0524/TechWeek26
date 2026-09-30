@@ -3,14 +3,18 @@
 Implemented:
     * grid creation (UNKNOWN / FREE / OCCUPIED), grid[row][col]
     * world_to_grid() / grid_to_world() / in_bounds()
-    * LiDAR polar -> robot-local Cartesian -> world helpers
-    * minimal scan insertion: cells along each ray -> FREE, hit cell -> OCCUPIED
-      (pure pose-based, trusts the current pose estimate)
+    * LiDAR polar -> robot-local Cartesian -> world helpers (LiDAR mount offset)
+    * minimal binary scan insertion (M0, docs/research/03 §A, 10 §11.1):
+      rays start at the LiDAR origin, only finite hits inside
+      [min_range, max_range) are used, cells inside min_range are not cleared,
+      each cell is updated once per scan and a hit wins over a miss.
+      A later free ray clears an old OCCUPIED cell (no permanent ghosts).
+      Trusts the current pose estimate.
 
 NOT implemented (TODO, feat/mapping):
-    * probabilistic update (log-odds) - currently the last observation wins
+    * probabilistic update (log-odds + clamp) - currently the last scan wins
     * scan matching / SLAM (pose correction from the map)
-    * dynamic obstacle (moving people) filtering
+    * dynamic obstacle (moving people) filtering, reset_region
 """
 
 import math
@@ -58,26 +62,41 @@ class OccupancyGrid:
             self.grid[row][col] = value
 
     # ------------------------------------------------------- scan insertion
-    def insert_scan(self, pose, ranges, lidar_fov, max_range, mark_free=True):
+    def insert_scan(self, pose, ranges, lidar_fov, max_range, mark_free=True, min_range=0.0):
         """Mark one LiDAR scan into the grid using ``pose`` (x, y, theta).
 
-        Rays that return inf/over max_range only clear free space up to max_range.
-        TODO(feat/mapping): replace "last write wins" with log-odds.
+        * Rays start at the LiDAR origin (config.LIDAR_MOUNT_OFFSET).
+        * inf / NaN / out-of-range rays are skipped: "no return" cannot be told
+          apart from an object inside the minRange blind zone, so it never
+          creates FREE space (research 09 §4, 10 §11.1).
+        * Cells closer than ``min_range`` to the LiDAR are not cleared.
+        * Each cell is updated once per scan; a hit in the same scan wins.
+        TODO(feat/mapping): replace "last scan wins" with log-odds + clamp.
         """
-        start = self.world_to_grid(pose[0], pose[1])
-        for (wx, wy), hit in scan_to_world_points(pose, ranges, lidar_fov, max_range):
-            end = self.world_to_grid(wx, wy)
-            ray = bresenham(start, end)
+        origin = local_to_world(pose, *config.LIDAR_MOUNT_OFFSET)
+        start = self.world_to_grid(*origin)
+        n = len(ranges)
+        hits, misses = set(), set()
+        for i, r in enumerate(ranges):
+            if not is_valid_hit(r, min_range, max_range):
+                continue
+            angle = lidar_angle(i, n, lidar_fov)
+            end = self.world_to_grid(*local_to_world(pose, *_sensor_point(r, angle)))
+            hits.add(end)
             if mark_free:
-                for cell in (ray[:-1] if hit else ray):
-                    self._mark_free(*cell)
-            if hit:
-                self.set(end[0], end[1], OCCUPIED)
+                ray = bresenham(start, end)[:-1]
+                if min_range > 0.0:
+                    # Cells in the minRange blind zone stay as they are.
+                    ray = [c for c in ray if self._distance_to(c, origin) >= min_range]
+                misses.update(ray)
+        for cell in misses - hits:
+            self.set(cell[0], cell[1], FREE)
+        for cell in hits:
+            self.set(cell[0], cell[1], OCCUPIED)
 
-    def _mark_free(self, row, col):
-        # An observed obstacle is never erased by a later free ray (TODO: log-odds).
-        if self.in_bounds(row, col) and self.grid[row][col] != OCCUPIED:
-            self.grid[row][col] = FREE
+    def _distance_to(self, cell, point):
+        x, y = self.grid_to_world(*cell)
+        return math.hypot(x - point[0], y - point[1])
 
     def count(self, value):
         return sum(row.count(value) for row in self.grid)
@@ -112,6 +131,17 @@ def local_to_world(pose, lx, ly):
     x, y, th = pose
     c, s = math.cos(th), math.sin(th)
     return (x + c * lx - s * ly, y + s * lx + c * ly)
+
+
+def is_valid_hit(r, min_range, max_range):
+    """True for a finite LiDAR return inside [min_range, max_range)."""
+    return math.isfinite(r) and min_range <= r < max_range
+
+
+def _sensor_point(r, angle):
+    """Point at range r along a ray, in the robot frame (LiDAR mount applied)."""
+    lx, ly = polar_to_local(r, angle)
+    return (lx + config.LIDAR_MOUNT_OFFSET[0], ly + config.LIDAR_MOUNT_OFFSET[1])
 
 
 def scan_to_world_points(pose, ranges, fov, max_range):
