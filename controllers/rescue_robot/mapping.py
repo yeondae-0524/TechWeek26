@@ -8,11 +8,11 @@ Implemented:
       rays start at the LiDAR origin, only finite hits inside
       [min_range, max_range) are used, cells inside min_range are not cleared,
       each cell is updated once per scan and a hit wins over a miss.
-      A later free ray clears an old OCCUPIED cell (no permanent ghosts).
+    Repeated free rays can clear an old OCCUPIED cell (no permanent ghosts).
       Trusts the current pose estimate.
 
 NOT implemented (TODO, feat/mapping):
-    * probabilistic update (log-odds + clamp) - currently the last scan wins
+    * probabilistic update (log-odds + clamp), exported as UNKNOWN/FREE/OCCUPIED
     * scan matching / SLAM (pose correction from the map)
     * dynamic obstacle (moving people) filtering, reset_region
 """
@@ -26,12 +26,21 @@ from interfaces import FREE, OCCUPIED, UNKNOWN
 class OccupancyGrid:
     """grid[row][col] with row along +y and col along +x (see docs/INTERFACES.md)."""
 
+    LOG_ODDS_HIT = 0.85
+    LOG_ODDS_MISS = -0.40
+    LOG_ODDS_MIN = -2.0
+    LOG_ODDS_MAX = 3.5
+    LOG_ODDS_OCCUPIED = 0.4
+    LOG_ODDS_FREE = -0.2
+
     def __init__(self, width, height, resolution, origin):
         self.width = int(width)        # columns
         self.height = int(height)      # rows
         self.resolution = float(resolution)
         self.origin = (float(origin[0]), float(origin[1]))  # world (x, y) of cell (0,0) lower-left corner
         self.grid = [[UNKNOWN] * self.width for _ in range(self.height)]
+        self.logodds = [[0.0] * self.width for _ in range(self.height)]
+        self.observed = [[False] * self.width for _ in range(self.height)]
 
     @classmethod
     def centered_on(cls, x, y, width, height, resolution):
@@ -61,6 +70,40 @@ class OccupancyGrid:
         if self.in_bounds(row, col):
             self.grid[row][col] = value
 
+    def _update_cell(self, row, col, delta):
+        if not self.in_bounds(row, col):
+            return
+        self.logodds[row][col] = min(
+            self.LOG_ODDS_MAX,
+            max(self.LOG_ODDS_MIN, self.logodds[row][col] + delta),
+        )
+        self.observed[row][col] = True
+        self._export_cell(row, col)
+
+    def _export_cell(self, row, col):
+        value = self.logodds[row][col]
+        if not self.observed[row][col]:
+            self.grid[row][col] = UNKNOWN
+        elif value > self.LOG_ODDS_OCCUPIED:
+            self.grid[row][col] = OCCUPIED
+        elif value < self.LOG_ODDS_FREE:
+            self.grid[row][col] = FREE
+
+    def reset_region(self, center, radius):
+        """Reset cells within ``radius`` metres of (x, y) to UNKNOWN."""
+        cx, cy = center
+        row_min, col_min = self.world_to_grid(cx - radius, cy - radius)
+        row_max, col_max = self.world_to_grid(cx + radius, cy + radius)
+        for row in range(row_min, row_max + 1):
+            for col in range(col_min, col_max + 1):
+                if not self.in_bounds(row, col):
+                    continue
+                x, y = self.grid_to_world(row, col)
+                if math.hypot(x - cx, y - cy) <= radius:
+                    self.logodds[row][col] = 0.0
+                    self.observed[row][col] = False
+                    self.grid[row][col] = UNKNOWN
+
     # ------------------------------------------------------- scan insertion
     def insert_scan(self, pose, ranges, lidar_fov, max_range, mark_free=True, min_range=0.0):
         """Mark one LiDAR scan into the grid using ``pose`` (x, y, theta).
@@ -71,7 +114,6 @@ class OccupancyGrid:
           creates FREE space (research 09 §4, 10 §11.1).
         * Cells closer than ``min_range`` to the LiDAR are not cleared.
         * Each cell is updated once per scan; a hit in the same scan wins.
-        TODO(feat/mapping): replace "last scan wins" with log-odds + clamp.
         """
         origin = local_to_world(pose, *config.LIDAR_MOUNT_OFFSET)
         start = self.world_to_grid(*origin)
@@ -90,9 +132,9 @@ class OccupancyGrid:
                     ray = [c for c in ray if self._distance_to(c, origin) >= min_range]
                 misses.update(ray)
         for cell in misses - hits:
-            self.set(cell[0], cell[1], FREE)
+            self._update_cell(cell[0], cell[1], self.LOG_ODDS_MISS)
         for cell in hits:
-            self.set(cell[0], cell[1], OCCUPIED)
+            self._update_cell(cell[0], cell[1], self.LOG_ODDS_HIT)
 
     def _distance_to(self, cell, point):
         x, y = self.grid_to_world(*cell)
