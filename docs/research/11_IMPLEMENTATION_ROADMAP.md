@@ -134,7 +134,7 @@ mapping.OccupancyGrid 내부를 log-odds(hit +0.85, miss −0.4, clamp [−2, 3.
 
 ### Prompt D — S8 Target pipeline
 ```text
-AGENTS.md, docs/research/07_TARGET_SEARCH.md, archive의 연습 detection 코드를 참고(수정 금지)하라.
+AGENTS.md, docs/research/07_TARGET_SEARCH.md를 참고하라.
 detection.py에 NumPy만 쓰는 HSV 검출기(고정 target dict 반환)와 TargetTracker(M-of-N 3/5, bearing=atan2(W/2−cx, f), LiDAR 거리 중앙값, world 위치, dedup 반경, visited, memory)를 추가하라.
 OpenCV를 새로 의존하지 마라. interfaces.py 변경 금지. tests/test_target_tracker.py 추가.
 ```

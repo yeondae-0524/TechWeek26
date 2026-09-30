@@ -62,16 +62,8 @@ webots_test/
 ├─ docs/  INTERFACES.md  ARCHITECTURE.md  DEVELOPMENT.md
 │   └─ research/               # reference 조사 · 목표 architecture · 구현 로드맵 (00~13)
 ├─ scripts/verify_baseline.py
-├─ archive/practice_project/   # baseline 이전 연습 파일 보관 (아래 참고)
 ├─ README.md  AGENTS.md
 ```
-
-`archive/practice_project/`에는 baseline과 무관한 이전 연습 파일을 옮겨 두었다.
-Webots 프로젝트 구조(`worlds/` + `controllers/`)를 유지하므로 그 안의 world를 열면 그대로 실행된다.
-
-- `worlds/practice.wbt` + `controllers/detection_controller/`: HSV 빨간 박스 detection 실습 (feat/detection 참고용)
-- `worlds/practice_backup.wbt`: detection 실습 전 practice world 백업
-- `worlds/hello_drive.wbt`, `worlds/practice1.wbt`: 초기 연습 world (hello_drive는 controller가 없음)
 
 개발 흐름과 branch별 작업 가이드는 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 

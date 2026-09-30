@@ -26,7 +26,7 @@ waypoint = (x, y)
 ## 규칙
 
 1. **기존 tests를 깨뜨리지 말 것.** 테스트를 지워서 통과시키지 않는다.
-2. **unrelated file 수정 금지.** 작업 범위 밖 파일(특히 `archive/` 아래 연습 파일)은 건드리지 않는다.
+2. **unrelated file 수정 금지.** 작업 범위 밖 파일은 건드리지 않는다.
 3. **world file(.wbt) 임의 대규모 변경 금지.** 필요하면 백업 후 최소 변경하고 이유를 보고한다.
 4. **새로운 dependency 추가 전 이유를 확인**(사람에게 묻기). 현재는 표준 라이브러리 + NumPy(카메라 frame)만 사용.
 5. **hard-coded robot-specific values 최소화.** device 이름, wheel geometry, 속도, 안전거리 등은 `config.py`에만 둔다.

@@ -93,7 +93,7 @@ commit 전 확인: 의도한 파일만 수정됐는가 · 다른 팀원 작업�
 
 - 목표: `detect_target(frame) -> target dict` 구현 (당일 공개되는 target 특징 기준).
 - 입력: NumPy `(H, W, 3)` BGR, 또는 `None`. 출력 규격은 INTERFACES.md §4 그대로.
-- 참고: `archive/practice_project/controllers/detection_controller/` (HSV 빨간 박스 실습 코드, `archive/practice_project/worlds/practice.wbt`로 실행 가능).
+- 참고: [research/07_TARGET_SEARCH.md](research/07_TARGET_SEARCH.md) (HSV 검출, multi-frame 확인, target 위치 추정, 접근).
 - 완료 기준: `found / cx / direction / area` 규격 유지, `test_interfaces.py` 통과, 저장한 샘플 frame으로 unit test 추가.
 - OpenCV를 쓰려면 dependency 추가 합의 필요 (Python 3.10에는 이미 설치돼 있음).
 

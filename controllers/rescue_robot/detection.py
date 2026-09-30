@@ -18,8 +18,8 @@ Output (see interfaces.empty_target / docs/INTERFACES.md):
     }
     direction rule: split the image width in three equal parts.
 
-Reference: archive/practice_project/controllers/detection_controller/ contains the practice HSV
-red-box detector (kept as-is, not copied here on purpose).
+Design reference: docs/research/07_TARGET_SEARCH.md (NumPy HSV detector, multi-frame
+confirmation, bearing + LiDAR target position).
 """
 
 from interfaces import empty_target
