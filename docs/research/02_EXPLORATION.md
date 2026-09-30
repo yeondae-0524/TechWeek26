@@ -1,5 +1,8 @@
 # 02. Autonomous Exploration & Frontier Selection
 
+> 수치 해석: 공식 사양은 [OFFICIAL]/[DERIVED], 외부 비교표·논문 수치는 [REFERENCE], PC timing은 [MEASURED] (04·09의 조건 한정). 별도 출처 없는 우리 거리·횟수·속도·주기·시간 목표는 모두 [INITIAL TUNING], 대회 최종 조건은 [DAY-OF CHECK]. [ORGANIZER]는 organizer-confirmed이다.
+
+
 > 범례: ✅ = 이번 조사에서 **소스 코드까지 직접 확인** · 📄 = 논문/문서만 확인(아이디어 참고) · ⚠️ = 확인 못 함/추정
 > 소스 확인은 2026-09-29~30, 각 repo의 기본 브랜치 HEAD 기준 (commit은 [01_REFERENCE_MATRIX.md](01_REFERENCE_MATRIX.md) 참고).
 
@@ -79,8 +82,8 @@ TSP 기반 전역 투어(TARE/FUEL/Kulich)는 우리 규모에서 이득이 작�
 | PONI | 가장 큰 5개만 유지, 로봇 주변 1 m 마스킹 |
 | FUEL | `cluster_min=100` voxel, 큰 frontier는 `cluster_size_xy=2.0 m`로 분할 |
 
-→ 우리(0.05 m/셀, e-puck 직경 ~7.4 cm): **`FRONTIER_MIN_CELLS = 4~6` (0.2~0.3 m)** 로 시작(initial tuning suggestion). 
-너무 크면 좁은 틈 뒤 공간을 놓친다. 추가로 **inflated grid에서 도달 가능한 셀이 0개인 클러스터는 제거**.
+→ 우리(TB3 반경 0.105 m [OFFICIAL], 외접 약 0.110 m [DERIVED], 0.05 m/셀 [INITIAL TUNING]): **`FRONTIER_MIN_CELLS = 4~6` (0.2~0.3 m)** 로 시작(initial tuning suggestion).
+클러스터 길이는 통로 폭이 아니다. 0.16 m 인플레이션 후 도달성을 별도 판정한다. 너무 크면 좁은 틈 뒤 공간을 놓친다. 추가로 **inflated grid에서 도달 가능한 셀이 0개인 클러스터는 제거**.
 
 ### 2.4 대표점 (goal cell)
 
@@ -104,7 +107,7 @@ TSP 기반 전역 투어(TARE/FUEL/Kulich)는 우리 규모에서 이득이 작�
 |---|---|---|---|
 | 가산형 (cost) | `c = a·d − b·G` | m-explore ✅, Burgard 2005 📄 (`U − β·cost`) | 단위 스케일에 민감, 가중치 튜닝 필요 |
 | 가산형 (revenue) | `r = m·G·h − d` | rrt_exploration ✅ | 동일 |
-| 지수 감쇠형 | `u = G·exp(−λ·L)` | González-Baños & Latombe 2002 📄, NBVP(Bircher 2016) 📄, GBPlanner ✅ | **스케일에 강함**: λ = "몇 m 가면 가치가 반으로" (`ln2/λ`) 로 직관적 튜닝 |
+| 지수 감쇠형 | `u = G·exp(−λ·L)` | González-Baños & Latombe 2002 📄, NBVP(Bircher 2016) 📄, GBPlanner ✅ | **거리 감쇠 길이를 해석하기 쉬움**: λ = "몇 m 가면 가치가 반으로" (`ln2/λ`) 로 직관적 튜닝 |
 | 시간 비용형 | `t = max(L/v, Δψ/ω)` | FUEL ✅ | 회전 비용을 시간으로 통합 (드론은 이동 중 yaw 가능 → max, **차동구동 제자리 회전은 합(+)**) |
 | 순수 거리 | nearest | Yamauchi 1997 📄, frontier_exploration ✅ | 가장 단순. Holz 2010 📄 평가에서 room-aware 등 개선 여지 보고 |
 | 다기준(MCDM) | Choquet integral 등 | Basilico & Amigoni 2011 📄 (S&R 대상) | 이론적, 해커톤엔 과함 |
@@ -115,8 +118,8 @@ TSP 기반 전역 투어(TARE/FUEL/Kulich)는 우리 규모에서 이득이 작�
 사용자가 제안한 `score = α·path_cost − β·information_gain` 은 **방향은 맞다**. 다만:
 
 1. **path_cost는 Euclidean이 아니라 거리장(= A*와 동일한 최단거리)** 을 써야 "벽 반대편 frontier" 문제가 해결된다. 추가 계산비용은 거리장 1회(≈12 ms)뿐.
-2. 가산형은 G와 L의 단위(m² vs m) 스케일이 맵 크기에 따라 흔들린다 → **지수형 `u = G·exp(−λL)`** 을 권장 (GBPlanner/NBVP와 동일 계열). 튜닝: `λ = ln 2 / L_half`, 예) L_half = 1.0 m (e-puck 0.08 m/s → 12.5 s 거리) — initial tuning suggestion.
-3. **회전 비용**(m-explore엔 없음): 차동구동은 목표 방향으로 제자리 회전 후 출발하므로 `L_eff = L + (v/ω)·|Δψ|` (config 기준 `0.08/1.5 ≈ 0.053 m/rad`) 로 거리 환산. 180°가 약 0.17 m — **작지만 동률 frontier 사이의 진동을 줄이는 tie-breaker** 로 유용.
+2. 가산형은 G와 L의 단위(m² vs m) 스케일이 맵 크기에 따라 흔들린다 → **지수형 `u = G·exp(−λL)`** 을 권장 (GBPlanner/NBVP와 동일 계열). 튜닝: `λ = ln 2 / L_half`, 예) L_half = 1.0 m (TB3 운용 시작값 0.15 m/s → 약 6.7 s 거리) — initial tuning suggestion.
+3. **회전 비용**(m-explore엔 없음): 차동구동은 목표 방향으로 제자리 회전 후 출발하므로 `L_eff = L + (v/ω)·|Δψ|` ([INITIAL TUNING] `0.15/1.5 = 0.10 m/rad`) 로 거리 환산. 180°가 약 0.31 m — **작지만 동률 frontier 사이의 진동을 줄이는 tie-breaker** 로 유용.
 4. **hysteresis (필수)**: m-explore에는 없음(→ goal thrashing). 가져올 곳:
    - rrt_exploration: 현재 위치 3 m 이내 후보 IG × 2.0
    - VLFM: 직전 frontier가 0.5 m 내 여전히 존재하고 가치가 크게 안 떨어지면 유지 + 같은 (위치, frontier) 재선택 금지(`AcyclicEnforcer`)
@@ -128,8 +131,8 @@ TSP 기반 전역 투어(TARE/FUEL/Kulich)는 우리 규모에서 이득이 작�
 
 | 레벨 | 정의 | 비용 | 출처 | 권장 |
 |---|---|---|---|---|
-| G0 | 클러스터 셀 수 × res (경계 길이) | 0 | m-explore | MVP |
-| G1 | 대표 셀 반경 R 안 UNKNOWN 셀 수 × res² | O(R²) per 후보 | rrt_exploration `informationGain` | **Stable 기본값** (R = LiDAR 유효거리 or 0.5~1.0 m) |
+| G0 | 클러스터 셀 수 × res (경계 길이) | 0 | m-explore | 비교용 단순안 |
+| G1 | 대표 셀 반경 R 안 UNKNOWN 셀 수 × res² | O(R²) per 후보 | rrt_exploration `informationGain` | **MVP 기본값** (R = LiDAR 유효거리 or 0.5~1.0 m) |
 | G2 | 대표 셀에서 N개 ray-cast로 **보이는** UNKNOWN 수 (벽에서 ray 중단) | O(N·R) | FUEL `findViewpoints`, hector `getYawToUnknown` | Competitive |
 | G3 | **카메라 미탐색(unsearched) 셀** 중 카메라 FOV·거리 안에 보이는 수 | O(N·R) | (우리 S&R 확장; TARE coverage 아이디어) | **S&R 차별화 핵심** |
 
@@ -138,12 +141,12 @@ TSP 기반 전역 투어(TARE/FUEL/Kulich)는 우리 규모에서 이득이 작�
 
 ### 3.4 우리 S&R 특유: "LiDAR로 탐색됨 ≠ 카메라로 수색됨"
 
-- 우리 LiDAR는 360° (baseline world: 360 rays, maxRange 2 m), 카메라는 e-puck 기준 **FOV 0.84 rad(48°), 52×39 px** ([E-puck.proto R2025a](https://github.com/cyberbotics/webots/blob/R2025a/projects/robots/gctronic/e-puck/protos/E-puck.proto)).
+- [OFFICIAL] LDS-01은 360 samples, 약 360°, 0.12–3.5 m, 공식 camera는 **640×480, 약 60° HFOV** ([09](09_WEBOTS_REFERENCES.md)). 이전 [E-puck.proto R2025a](https://github.com/cyberbotics/webots/blob/R2025a/projects/robots/gctronic/e-puck/protos/E-puck.proto)는 practice/reference only. 전방 약 1/6만 보므로 camera coverage는 여전히 필요하다.
 - 따라서 LiDAR frontier가 다 사라져도 **카메라가 한 번도 보지 않은 벽/구석**이 남는다 → target 누락.
 - hector의 **inner exploration**(frontier 소진 시 "지나온 궤적에서 가장 먼 도달 가능 셀"로 이동)이 바로 이 문제의 고전적 해법.
 - 우리 권장: `camera_seen[row][col]` 보조 grid(OCCUPIED/FREE 셀을 카메라 frustum·거리 한계·가림 ray-cast로 표시)를 유지하고,
   1. EXPLORE 1단계: LiDAR frontier (G1/G2 + G3 가중)
-  2. EXPLORE 2단계(frontier 소진 후): **view frontier** = "카메라 미탐색 OCCUPIED 표면을 볼 수 있는 FREE 셀" 중 utility 최대
+  2. EXPLORE 2단계(frontier 소진 후): **view frontier** = "카메라 미탐색 FREE 바닥 또는 OCCUPIED 표면을 볼 수 있는 도달 가능한 FREE 셀" 중 utility 최대
   3. 그래도 없으면 RETURN_HOME
 
 ---
@@ -152,8 +155,8 @@ TSP 기반 전역 투어(TARE/FUEL/Kulich)는 우리 규모에서 이득이 작�
 
 | 항목 | m-explore | Nav2 | 우리 권장 |
 |---|---|---|---|
-| 진전 판정 | frontier까지 Euclidean 최소거리 감소 여부, 30 s | 로봇이 `required_movement_radius`(0.5 m) 이상 이동했는지, `movement_time_allowance` 10 s ([SimpleProgressChecker](https://github.com/ros-navigation/navigation2/blob/main/nav2_controller/plugins/simple_progress_checker.cpp)) | **이중**: (a) 경로 잔여거리 best-so-far가 δ(0.05 m) 이상 감소 (b) 변위 반경 (0.1 m / 8~10 s, TurtleBot3는 0.1 m/10 s) |
-| blacklist | centroid, ±5셀 사각형, 영구 | – | goal 셀 기준 반경 0.25 m, **TTL 60~90 s**, 전부 막히면 1회 초기화(second chance) |
+| 진전 판정 | frontier까지 Euclidean 최소거리 감소 여부, 30 s | 로봇이 `required_movement_radius`(0.5 m) 이상 이동했는지, `movement_time_allowance` 10 s ([SimpleProgressChecker](https://github.com/ros-navigation/navigation2/blob/main/nav2_controller/plugins/simple_progress_checker.cpp)) | **이중**: (a) 경로 잔여거리 best-so-far가 δ(0.05 m) 이상 감소 (b) 변위 반경 (우리 0.15 m/10 s [INITIAL TUNING], 외부 TB3 Nav2 0.1 m/10 s [REFERENCE]) |
+| blacklist | centroid, ±5셀 사각형, 영구 | – | goal 셀 기준 반경 0.30 m, **TTL 90 s** [INITIAL TUNING], 전부 막히면 1회 초기화(second chance) |
 | 종료 | frontier 없음 / 전부 blacklist | – | + target 모두 발견 + **시간 예산** + view frontier 소진 |
 
 ---
@@ -205,7 +208,7 @@ select_exploration_goal(grid, pose, state, now):
 - Holz, Basilico, Amigoni, Behnke, "Evaluating the efficiency of frontier-based exploration strategies," ISR/ROBOTIK 2010. [PDF](https://www.ais.uni-bonn.de/papers/ISR_Robotik_2010_Holz_Exploration.pdf) 📄
 - Basilico & Amigoni, "Exploration strategies based on multi-criteria decision making for searching environments in rescue operations," Auton. Robots 2011. [doi:10.1007/s10514-011-9249-9](https://doi.org/10.1007/s10514-011-9249-9) 📄 (초록만 확인; 세부 기준은 ⚠️ 미확인)
 - Juliá, Gil, Reinoso, "A comparison of path planning strategies for autonomous exploration and mapping of unknown environments," Auton. Robots 2012. [doi:10.1007/s10514-012-9298-8](https://doi.org/10.1007/s10514-012-9298-8) 📄
-- Keidar & Kaminka, "Efficient frontier detection for robot exploration," IJRR 2014. [doi:10.1177/0278364913494911](https://doi.org/10.1177/0278364913494911) 📄 (WFD/FFD — 우리 맵 크기에선 전체 스캔 6 ms라 불필요)
+- Keidar & Kaminka, "Efficient frontier detection for robot exploration," IJRR 2014. [doi:10.1177/0278364913494911](https://doi.org/10.1177/0278364913494911) 📄 (WFD/FFD — old practice-PC 160×160에서 약 6 ms; 큰 grid 비용은 04에서 별도 검토)
 - Bircher et al., "Receding Horizon Next-Best-View Planner for 3D Exploration," ICRA 2016. [doi:10.1109/ICRA.2016.7487281](https://doi.org/10.1109/ICRA.2016.7487281) 📄
 - Umari & Mukhopadhyay, "Autonomous robotic exploration based on multiple rapidly-exploring randomized trees," IROS 2017. [doi:10.1109/IROS.2017.8202319](https://doi.org/10.1109/IROS.2017.8202319) (구현 ✅)
 - Kulich, Kubalík, Přeučil, "An Integrated Approach to Goal Selection in Mobile Robot Exploration," Sensors 2019. [doi:10.3390/s19061400](https://doi.org/10.3390/s19061400) · [arXiv:2007.10085](https://arxiv.org/abs/2007.10085) 📄
