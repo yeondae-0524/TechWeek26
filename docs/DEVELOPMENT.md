@@ -34,6 +34,53 @@ main                     항상 verify_baseline.py --webots 통과 상태 유지
 - merge 전 조건: `python scripts/verify_baseline.py --webots` **ALL CHECKS PASSED**.
 - 새 dependency 추가는 팀 합의 후. (현재: 표준 라이브러리 + NumPy)
 
+### 2.1 Git commit 규칙 (팀 합의)
+
+**형식**: `<type>: <작업 내용>` — 짧고 구체적으로, 메시지만 보고 무엇이 바뀌었는지 알 수 있게.
+
+| Type | 사용 상황 | 예시 |
+|---|---|---|
+| `feat` | 새로운 기능 | `feat: add gyro heading fusion` |
+| `fix` | 버그 수정 | `fix: prevent diagonal corner cutting` |
+| `test` | 테스트 추가/수정 | `test: add safety monitor tests` |
+| `refactor` | 동작 변화 없는 구조 개선 | `refactor: extract frontier scoring helper` |
+| `docs` | README·문서 | `docs: update implementation roadmap` |
+| `chore` | 설정·환경·관리 | `chore: add rescue mode configuration` |
+| `perf` | 성능 개선 | `perf: optimize frontier distance field` |
+
+피할 것: `fix: fix bug`, `feat: update code`, `chore: 수정`, `feat: robot stuff`,
+그리고 목적이 섞인 `feat: add mapping and fix control and update docs`.
+
+**Commit 순서**
+
+```text
+기능 구현 → 관련 테스트 → 기존 테스트 확인(verify_baseline.py, 필요 시 --webots) → git status / git diff → 필요한 파일만 add → commit
+```
+
+```bash
+git add controllers/rescue_robot/localization.py controllers/rescue_robot/config.py tests/test_localization_gyro.py
+git commit -m "feat: add gyro heading fusion"
+```
+
+commit 전 확인: 의도한 파일만 수정됐는가 · 다른 팀원 작업이 섞이지 않았는가 · 임시 파일/로그가 없는가 · `.wbt`가 의도치 않게 바뀌지 않았는가 · 테스트 통과.
+
+**팀 최종 규칙**
+1. `main`에 직접 commit/push하지 않는다.
+2. 기능별 branch에서 작업한다.
+3. 한 commit에는 하나의 목적만 넣는다.
+4. 메시지는 `<type>: <구체적인 작업 내용>`.
+5. type은 `feat` / `fix` / `test` / `refactor` / `docs` / `chore` / `perf`.
+6. 관련 없는 파일 변경을 한 commit에 섞지 않는다.
+7. 기존 테스트를 깨뜨린 상태로 commit하지 않는다.
+8. 가능하면 commit 전 `verify_baseline.py`를 실행한다.
+9. `.wbt`는 충돌이 크므로 불필요하게 수정하지 않는다.
+10. 임시 디버깅 코드, 로그, 생성 파일은 commit하지 않는다.
+
+기능별 commit 예시는 [research/11_IMPLEMENTATION_ROADMAP.md](research/11_IMPLEMENTATION_ROADMAP.md)의 Step 구분을 따른다
+(예: `feat: add log-odds occupancy mapping` → `test: add log-odds mapping tests`).
+
+### 2.2 구현 순서
+
 - 구현 순서·수용 기준·branch별 담당 Step은 [research/11_IMPLEMENTATION_ROADMAP.md](research/11_IMPLEMENTATION_ROADMAP.md) (§2, §3.1 M0, §4)를 따른다.
   목표 설계는 [research/10_FINAL_ARCHITECTURE.md](research/10_FINAL_ARCHITECTURE.md).
 - 새 동작 모드는 `RESCUE_MODE` opt-in으로만 추가하고 기본값 `STOP`은 유지한다.

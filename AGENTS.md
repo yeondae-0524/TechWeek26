@@ -35,7 +35,17 @@ waypoint = (x, y)
 7. 확정되지 않은 로봇 사양(wheel radius, encoder 단위 등)은 추측해서 확정하지 않는다.
 8. 미완성 알고리즘이 로봇을 움직이게 하지 않는다. 기본 동작은 정지(`BASELINE_MODE = "STOP"`).
 9. 새 기능에는 Webots 없이 도는 unit test를 `tests/`에 추가한다.
-10. git commit/branch 조작은 사람이 요청할 때만 한다.
+10. git commit/branch 조작은 사람이 요청할 때만 한다. 요청받았을 때는 아래 **Git 규칙**을 따른다.
+
+## Git 규칙 (팀 합의, 상세: [docs/DEVELOPMENT.md §2.1](docs/DEVELOPMENT.md))
+
+- `main`에 직접 commit/push하지 않는다. 기능별 branch(`feat/<module>`)에서 작업한다.
+- **한 commit = 한 목적.** 관련 없는 파일 변경을 섞지 않는다.
+- 메시지: `<type>: <구체적인 작업 내용>` (영어, 소문자 시작, 짧게). 예: `feat: add gyro heading fusion`
+- type은 `feat` / `fix` / `test` / `refactor` / `docs` / `chore` / `perf`만 사용. `fix: fix bug` 같은 추상적 메시지 금지.
+- commit 전: 관련 테스트 → `python scripts/verify_baseline.py` (controller 동작 변경 시 `--webots`) → `git status`, `git diff`로 의도한 파일만 바뀌었는지 확인.
+- `git add .` 대신 **필요한 파일만** `git add <file>`.
+- 테스트가 깨진 상태, 임시 디버깅 코드, 로그, 생성 파일은 commit하지 않는다. `.wbt`는 불필요하게 수정하지 않는다.
 
 ## 코드 수정 후 반드시
 
