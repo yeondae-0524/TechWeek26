@@ -187,7 +187,7 @@ def frontier_score(frontier,pose,grid,resolution,origin):
 
 
 
-    # 논문 기반 utility
+    # 방향 고려 코스트 계산
     return (
         3.0*gain
         -2.0*distance
