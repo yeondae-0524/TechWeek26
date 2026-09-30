@@ -246,6 +246,7 @@ class TargetTracker:
             track = self._associate(xy, rng, matched)
             if track is None:
                 track = {"id": self._next_id, "xy": xy, "confirmed": False, "visited": False,
+                         "skipped": False,
                          "hits": deque(maxlen=self.window), "points": deque(maxlen=self.window),
                          "ranges": deque(maxlen=self.window), "last_seen": now}
                 self._next_id += 1
@@ -294,7 +295,7 @@ class TargetTracker:
         return [t for t in self.tracks if t["confirmed"]]
 
     def unvisited(self):
-        return [t for t in self.confirmed() if not t["visited"]]
+        return [t for t in self.confirmed() if not t["visited"] and not t.get("skipped")]
 
     def nearest_unvisited(self, pose):
         candidates = self.unvisited()
@@ -309,6 +310,12 @@ class TargetTracker:
         for track in self.tracks:
             if track["id"] == track_id:
                 track["visited"] = True
+
+    def skip(self, track_id):
+        """Give up on a target (unreachable): excluded from unvisited(), not counted as visited."""
+        for track in self.tracks:
+            if track["id"] == track_id:
+                track["skipped"] = True
 
     def visited_count(self):
         return sum(1 for t in self.tracks if t["visited"])
@@ -326,6 +333,20 @@ def relative_to(pose, xy):
     dx, dy = xy[0] - pose[0], xy[1] - pose[1]
     bearing = math.atan2(dy, dx) - pose[2]
     return math.atan2(math.sin(bearing), math.cos(bearing)), math.hypot(dx, dy)
+
+
+def standoff_point(pose, xy, distance):
+    """Point on the robot->target line, ``distance`` m before the target (robot side).
+
+    The apple is below the LiDAR plane and not in the map, so the planner goal is
+    this stand-off point, never the apple itself. If the robot is already closer
+    than ``distance``, its own position is returned.
+    """
+    dx, dy = pose[0] - xy[0], pose[1] - xy[1]
+    d = math.hypot(dx, dy)
+    if d <= distance:
+        return (pose[0], pose[1])
+    return (xy[0] + dx / d * distance, xy[1] + dy / d * distance)
 
 
 def is_arrived(pose, xy, distance=None):

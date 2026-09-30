@@ -81,6 +81,9 @@ TRACK_FORGET_S = 3.0          # s, a not yet confirmed target survives short occ
 # Arrival: robot centre within this distance of a confirmed target counts as a visit.
 # [DAY-OF] replace with the official arrival rule when the organizers answer.
 TARGET_ARRIVAL_DISTANCE = 0.30  # m [INITIAL TUNING]
+APPROACH_TIMEOUT = 40.0        # s per approach attempt, then turn to the target and replan [INITIAL TUNING]
+APPROACH_MAX_ATTEMPTS = 2      # attempts before the target is skipped [INITIAL TUNING]
+APPROACH_FACING_TOLERANCE = 0.15  # rad, heading error to stop the timeout re-orientation [INITIAL TUNING]
 
 # 0.05m 셀, 총 26×26m 지도입니다. 시작점 중심으로 배치해 가장자리 시작점도 포함합니다.
 GRID_RESOLUTION = 0.05

@@ -177,6 +177,30 @@ assert mission.controller.command == (0,0)
 assert mission.next_home_plan_time == 2 + config.NAV_REPLAN_PERIOD
 ''')
 
+    def test_approach_target_visits_when_at_standoff(self):
+        self.run_case('''robot, mission = make("MISSION")
+mission.tracker.tracks.append({"id": 7, "xy": (1.0, 0.0), "confirmed": True, "visited": False,
+                               "skipped": False, "hits": [], "points": [], "ranges": [], "last_seen": 0})
+mission.approach_target_id = 7
+mission.transition(main.APPROACH_TARGET, 0)
+mission.do_approach_target(0.064, (0.78, 0.0, 0.0))
+assert mission.tracker.get(7)["visited"]
+assert mission.state == main.EXPLORE
+assert mission.controller.command == (0,0)
+''')
+
+    def test_approach_target_stop_mode_never_moves(self):
+        self.run_case('''robot, mission = make("STOP")
+mission.tracker.tracks.append({"id": 3, "xy": (2.0, 0.0), "confirmed": True, "visited": False,
+                               "skipped": False, "hits": [], "points": [], "ranges": [], "last_seen": 0})
+mission.approach_target_id = 3
+mission.transition(main.APPROACH_TARGET, 0)
+mission.controller.set_velocity(0.15, 0)
+mission.do_approach_target(0.064, (0.0, 0.0, 0.0))
+assert mission.controller.command == (0,0)
+assert not mission.tracker.get(3)["visited"]
+''')
+
     def test_empty_nav_test_path_stops(self):
         self.run_case('''os.environ["RESCUE_WAYPOINTS"] = "[]"
 robot, mission = make()
