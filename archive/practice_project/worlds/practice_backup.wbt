@@ -1,0 +1,150 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/factory/containers/protos/WoodenBox.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/gctronic/e-puck/protos/E-puck.proto"
+
+WorldInfo {
+  info [
+    "Practice arena: e-puck obstacle avoidance with Python"
+  ]
+  title "Practice"
+  basicTimeStep 16
+}
+Viewpoint {
+  orientation 0.21852110278571732 -0.6442964099154024 -0.7328919864532819 5.4163228400759715
+  position -2.028292128041162 -1.4962527875929332 1.4763092041951582
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+RectangleArena {
+  floorSize 2 2
+}
+WoodenBox {
+  translation 0 0 0.05
+  name "center box"
+  size 0.2 0.2 0.1
+}
+WoodenBox {
+  translation -0.5 0.4 0.05
+  rotation 0 0 1 0.4
+  name "box NW"
+  size 0.15 0.15 0.1
+}
+WoodenBox {
+  translation 0.5 -0.4 0.05
+  rotation 0 0 1 -0.6
+  name "box SE"
+  size 0.15 0.15 0.1
+}
+WoodenBox {
+  translation 0.6 0.6 0.05
+  name "box NE"
+  size 0.1 0.1 0.1
+}
+WoodenBox {
+  translation -0.2 -0.5 0.05
+  name "low wall"
+  size 0.6 0.04 0.1
+}
+WoodenBox {
+  translation 0.45 0.15 0.05
+  rotation 0 0 1 1.5708
+  name "short wall"
+  size 0.35 0.04 0.1
+}
+Solid {
+  translation 0.3 0.4 0.05
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.8 0.2 0.2
+        roughness 0.5
+        metalness 0
+      }
+      geometry DEF PILLAR1 Cylinder {
+        height 0.1
+        radius 0.05
+      }
+    }
+  ]
+  name "pillar 1"
+  boundingObject USE PILLAR1
+}
+Solid {
+  translation -0.6 -0.1 0.05
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.2 0.4 0.8
+        roughness 0.5
+        metalness 0
+      }
+      geometry DEF PILLAR2 Cylinder {
+        height 0.1
+        radius 0.05
+      }
+    }
+  ]
+  name "pillar 2"
+  boundingObject USE PILLAR2
+}
+Solid {
+  translation 0.1 0.7 0.05
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.2 0.7 0.3
+        roughness 0.5
+        metalness 0
+      }
+      geometry DEF PILLAR3 Cylinder {
+        height 0.1
+        radius 0.05
+      }
+    }
+  ]
+  name "pillar 3"
+  boundingObject USE PILLAR3
+}
+Solid {
+  translation -0.3 0.1 0.05
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.9 0.7 0.1
+        roughness 0.5
+        metalness 0
+      }
+      geometry DEF PILLAR4 Cylinder {
+        height 0.1
+        radius 0.05
+      }
+    }
+  ]
+  name "pillar 4"
+  boundingObject USE PILLAR4
+}
+E-puck {
+  hidden position_0_0 739.095134716096
+  hidden position_0_1 713.0033126345429
+  hidden linearVelocity_0 -0.04785172611228976 -0.03567858416344472 2.165097368327826e-08
+  hidden angularVelocity_0 -0.01240241973622721 0.01663398529769112 7.3205658833041936e-09
+  hidden rotation_1 0 -1 0 2.3207315310951775
+  hidden linearVelocity_1 -0.04776855670391234 -0.035616572452774616 1.2533506691778528e-11
+  hidden angularVelocity_1 1.7808286211035371 -2.3884278505214813 4.3517896390794254e-08
+  hidden rotation_2 0 -1 0 3.2798123839299502
+  hidden linearVelocity_2 -0.0477685570217127 -0.035616572686297365 -1.1271858922332751e-10
+  hidden angularVelocity_2 1.7808286376645233 -2.3884278381931505 -4.280250864956775e-08
+  translation -0.2517658754111255 -0.828388652109629 -3.198034123973875e-05
+  rotation 0.00020849649586530654 6.917135989097593e-05 0.9999999758722666 -2.5009089823916617
+  controller "my_controller"
+  turretSlot [
+    GPS {
+    }
+  ]
+}

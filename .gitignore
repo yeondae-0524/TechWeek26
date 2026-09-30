@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pgm
+# Webots GUI layout files (per-user)
+.*.wbproj
+# debug outputs / logs (RESCUE_LOG, map dumps)
+*.log
+*.ppm
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
