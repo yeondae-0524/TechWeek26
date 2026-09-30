@@ -102,7 +102,7 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
 | 담당 | 파일 | 지금 있는 것 | 할 일 |
 |---|---|---|---|
 | Mapping + Localization | `localization.py`, `mapping.py` | encoder odometry, LiDAR 좌표 변환, log-odds Occupancy Grid, 영역 초기화 | gyro 보정, 이동 중 지도 품질 검증, (가능하면) Scan Matching, 동적 장애물 필터링 |
-| Detection | `detection.py` | `detect_target(frame)` **stub** (항상 found=False) | 목표 검출 → `found/cx/direction/area` |
+| Detection | `detection.py` | 빨간 사과 검출(HSV + 모양·크기·테두리 필터, 크기 기반 거리), `TargetTracker`(3/5 확인, 지도 좌표, 중복 제거, 가림 3 s 유지, 방문 표시), `relative_to` / `is_arrived` | 대회 당일 색 재튜닝 |
 | Planning | `planning.py` | A*, 장애물 inflation, frontier 검출·clustering | frontier 선택, 목표 접근 경로, 복귀 경로 |
 | Control + Local Planning | `control.py` | 바퀴 명령, SafetyMonitor(정지 영역·LiDAR 사각·후진 금지) | `follow_waypoint` 경로 추종, 장애물 회피, recovery |
 | 통합 | `main.py`, `devices.py`, `config.py` | state machine, 센서 읽기, 설정 | 모듈 연결, 모드 추가 |
@@ -127,6 +127,25 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
   자동 recovery 연결과 동적 장애물 구분은 아직 구현되지 않았다.
 - 위치 추정은 encoder odometry이며 gyro 융합과 Scan Matching은 TODO다.
   기본 모드는 계속 `STOP`이고, 경로 추종 및 자율 탐색은 별도 구현이 필요하다.
+
+## Detection 사용법 (빨간 사과 2개)
+
+- 연결: `main.py`가 0.128 s마다 `detection.detect()` → `self.tracker.update()`.
+  확정되면 `[detection] CONFIRMED target #N at (x, y)` 로그, status에 `targets confirmed=.. visited=../2`, `det_ms`.
+- 통합/Control이 쓸 것: `track = self.tracker.nearest_unvisited(pose)` → `detection.relative_to(pose, track["xy"])`
+  = (방향 rad, 거리 m) → `detection.is_arrived(pose, track["xy"])`이면 `self.tracker.mark_visited(track["id"])`.
+  2개 방문 시 EXPLORE가 RETURN_HOME으로 전환한다.
+- 값은 모두 `config.py` Detection 섹션: `TARGET_HSV_RANGES`, `TARGET_MIN_FILL`, `TARGET_ASPECT_RANGE`,
+  `TARGET_MAX_RANGE`, `TARGET_ARRIVAL_DISTANCE`(도착 기준, 운영진 답변 후 수정), `TARGET_HEIGHT_RANGE`(기본 None = 높이 가정 없음).
+  사과 **위치는 절대 넣지 않는다**.
+
+### 대회 당일 색 재튜닝 (10분)
+
+1. `$env:RESCUE_FRAME_DUMP="D:\frames"` 설정 후 **같은 PowerShell 창에서** Webots 실행 (대회 world, controller = rescue_robot)
+2. 사과가 보이면 ⏸ → `frame.png`를 `apple1.png`로 복사. 사과 없는 장면도 `none1.png`로 하나
+3. `py -3.10 scripts/tune_hsv.py D:\frames\apple1.png` → 사과 클릭으로 HSV 확인 → 슬라이더로 사과만 칠해지게 → `p` → 출력 줄을 `config.TARGET_HSV_RANGES`에 붙여넣기
+4. `py -3.10 scripts/tune_hsv.py D:\frames\*.png --check` → 사과 사진은 `OK`, `none1.png`는 `OK` 없음
+5. Webots 재실행 → `[detection] CONFIRMED` 확인. `debug.png`: 초록 = 인정, 빨강 = 탈락(이유)
 
 ## Control 주행 시험
 
