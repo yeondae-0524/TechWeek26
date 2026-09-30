@@ -291,14 +291,13 @@ class RescueMission:
                 self.home_plan_pending = True
                 return
             radius = (config.ROBOT_RADIUS+config.SAFETY_MARGIN)/self.grid.resolution
-            inflated = planning.inflate_obstacles(self.grid.grid, radius)
+            # planning API (PR #15): inflate_obstacles -> cost map (0-254), whole-cell radius;
+            # astar(grid, start, goal, costmap) blocks OCCUPIED cells, UNKNOWN is passable.
+            costmap = planning.inflate_obstacles(self.grid.grid, int(math.ceil(radius)))
             start = self.grid.world_to_grid(pose[0], pose[1])
             goal = self.grid.world_to_grid(self.home_pose[0], self.home_pose[1])
-            path = planning.astar(inflated, start, goal, allow_unknown=False)
-            mode = "known-only"
-            if not path:
-                path = planning.astar(inflated, start, goal, allow_unknown=True)
-                mode = "unknown allowed"
+            path = planning.astar(self.grid.grid, start, goal, costmap)
+            mode = "costmap"
             self.home_plan_pending = False
             print(f"[plan] 복귀 경로 ({mode}): {len(path)} cells")
             if not path:
@@ -370,7 +369,7 @@ class RescueMission:
             parts.append(f"map_missed={self.map_timer.missed}")
         if self.grid is not None:
             frontiers = planning.find_frontiers(self.grid.grid)
-            clusters = planning.cluster_frontiers(frontiers, min_size=3)
+            clusters = [c for c in planning.cluster_frontiers(frontiers) if len(c) >= 3]
             parts.append(f"map free={self.grid.count(0)} occ={self.grid.count(1)} frontiers={len(frontiers)} clusters={len(clusters)}")
             dump = os.environ.get("RESCUE_MAP_DUMP")
             if dump:
