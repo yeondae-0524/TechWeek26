@@ -1,0 +1,44 @@
+#VRML_SIM R2025a utf8
+# 주행 기능 검증용 소형 경기장입니다. 대회 지도나 target 위치를 입력하지 않습니다.
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/devices/robotis/protos/RobotisLds01.proto"
+WorldInfo {
+  basicTimeStep 64
+  title "Control test arena"
+}
+Viewpoint {
+  orientation -0.5773 0.5773 0.5773 2.0944
+  position 0 0 7
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+# 높이 0.5m 벽으로 LiDAR 평면을 막고 모든 벽을 최대 거리 3.5m 안에 배치합니다.
+RectangleArena {
+  floorSize 3 3
+  wallHeight 0.5
+  wallThickness 0.05
+}
+TurtleBot3Burger {
+  translation 0 0 0
+  rotation 0 0 1 0
+  controller "rescue_robot"
+  supervisor FALSE
+  synchronization TRUE
+  # 제공된 시작 pose만 전달하며, 정답 pose나 사전 지도를 사용하지 않습니다.
+  customData "{\"start_pose\": [0, 0, 0]}"
+  extensionSlot [
+    Camera {
+      translation 0.05 0 -0.08
+      fieldOfView 1.0472
+      width 640
+      height 480
+    }
+    RobotisLds01 {
+    }
+  ]
+}

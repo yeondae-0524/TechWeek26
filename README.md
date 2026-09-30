@@ -5,8 +5,8 @@
 미션: 사전 지도 없음 · 시작 pose만 제공 · 목표물 위치 모름 → 탐색 → 구조 대상 식별 → 접근 → 시작점 복귀.
 정적 장애물·움직이는 사람과 충돌 금지.
 
-**현재 상태: 새로 시작.** 운영진 공식 baseline(world·예제 controller)만 들어 있고, 우리 controller는 아직 없다.
-이전 baseline 코드는 git 이력(PR #4 이전)에 남아 있다.
+**현재 상태: Control 통합 개발 중.** `controllers/rescue_robot/main.py`에 encoder 위치 추정, waypoint 추종, LiDAR 안전 검사와 A* 복귀 경로 추종을 연결했다.
+탐색 목표 선택과 구조 대상 접근은 아직 미구현이다. 소형 시험 world에서 Webots 직선/코너 주행은 통과했으며 휴게실/동적 장애물 시나리오는 미검증이다. 기본 모드는 STOP이다.
 
 ## 환경
 
@@ -25,11 +25,13 @@
 
 ## 폴더 구조
 
-공식 baseline(`kyu-rae-kim/PNU-TECHWEEK-260930` @ `383de18`)과 같은 구조다.
+공식 baseline(`kyu-rae-kim/PNU-TECHWEEK-260930` @ `383de18`)의 원본 구조를 유지하고 팀 controller와 테스트를 추가했다.
 
 ```text
 TechWeek26/
 ├─ controllers/
+│   ├─ rescue_robot/          # 팀 실행 진입점, 경로 추종 및 안전 제어
+│   ├─ rescue_control/        # 이전 독립 시험 진입점 및 호환 모듈
 │   ├─ tb3_teleop/            # 키보드 조종 (W/A/S/D)
 │   ├─ tb3_teleop_sensors/    # 조종 + 센서 값 Display (compass도 읽지만 대회에선 사용 금지)
 │   ├─ tb3_teleop_cam/        # 조종 + OpenCV 색 검출 창
@@ -39,6 +41,7 @@ TechWeek26/
 │   ├─ tb3_segmentation/      # OpenCV 색 검출 예제
 │   └─ tb3_ground_truth/      # Supervisor 정답 pose 데모 (대회 입력 금지)
 ├─ worlds/
+│   ├─ breakroom_control_test.wbt  # 공식 센서 시험 world의 복사본, rescue_robot 실행
 │   ├─ apartment.wbt          # 약 13 m 아파트, 움직이는 사람, 색 사과 (64 ms)
 │   ├─ breakroom_teleop.wbt   # 휴게실 + 센서 Display (64 ms)
 │   ├─ breakroom_teleop_yolo.wbt, breakroom_ground_truth.wbt   (64 ms)
@@ -47,6 +50,7 @@ TechWeek26/
 ├─ protos/                    # 공식 world의 사과 PROTO
 ├─ models/YOLO/               # YOLO 가중치 자리 (commit하지 않음)
 ├─ docs/research/             # 알고리즘·공식 환경 조사, 목표 architecture, 구현 로드맵
+├─ tests/                     # 순수 Python 단위 및 main 통합 테스트
 ├─ AGENTS.md                  # 작업 규칙 (사람·AI 공통, 먼저 읽기)
 └─ README.md
 ```
@@ -71,6 +75,22 @@ cd TechWeek26
 2. 공식 world를 복사해 새 이름으로 저장 (예: Webots에서 `apartment.wbt` 열기 → File → Save World As → `apartment_rescue.wbt`)
 3. 복사본에서 `TurtleBot3Burger`의 `controller` 필드를 `<이름>`으로 변경 (원본 world는 수정하지 않는다)
 4. 로봇 시작 pose: apartment `(-0.3, -7.5, 180°)`, breakroom 계열 `(-1.265, 1.811, -24.3°)`
+
+## Control 주행 시험
+
+[한글 실행 안내](controllers/rescue_robot/README.md)에 모드, 좌표계, 팀 연결 API와 검증 범위를 정리했다.
+주 실행 파일은 `controllers/rescue_robot/main.py`이고, 순수 주행 로직은 `navigation_control.py`에 있다.
+
+Webots를 실행하는 PowerShell에서 다음을 설정하고 `worlds/control_arena_test.wbt`를 연다.
+
+```powershell
+$env:RESCUE_MODE = 'NAV_TEST'
+$env:RESCUE_WAYPOINTS = '[[1,0],[1,1],[0,1]]'
+```
+
+시험 waypoint는 시작점 기준 미터 좌표이며, 주행 가능한 시험 공간에서 사용한다.
+장애물이 잠깐 막으면 정지 후 경로를 재개하고, 계속 막히면 Planner에 재계획을 요청한다.
+전체 구조 미션을 자동 수행하는 완성 controller는 아직 아니다.
 
 ## 작업 방식
 
