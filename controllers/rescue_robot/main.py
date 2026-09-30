@@ -83,7 +83,9 @@ class RescueMission:
         self.step_count = 0
         self.last_status_time = -1e9
         self.target = empty_target()
-        self.found_targets = []  # TODO: Detection 팀의 대상 위치/방문 인터페이스 연결.
+        self.tracker = detection.TargetTracker()  # confirmed targets with world (x, y)
+        self.detection_timer_stats = StepTimer()  # camera read + detect() time
+        self.approach_target_id = None
         self.home_path = None
         self.home_plan_pending = False
         self.next_home_plan_time = 0.0
@@ -115,7 +117,12 @@ class RescueMission:
             self.grid.insert_scan(pose, ranges, self.devices.lidar_fov,
                                   self.devices.lidar_max_range, min_range=self.devices.lidar_min_range)
         if self.detection_timer.due(now):
-            self.target = detection.detect_target(self.devices.read_camera_frame())
+            started_detection = time.perf_counter()
+            self.target, blobs = detection.detect(self.devices.read_camera_frame())
+            self.detection_timer_stats.add(time.perf_counter() - started_detection)
+            for track in self.tracker.update(now, pose, blobs):
+                print(f"[detection] CONFIRMED target #{track['id']} at "
+                      f"({track['xy'][0]:+.2f}, {track['xy'][1]:+.2f})")
         handler = {
             INITIALIZE: self.do_initialize, EXPLORE: self.do_explore,
             APPROACH_TARGET: self.do_approach_target, RETURN_HOME: self.do_return_home,
@@ -241,9 +248,14 @@ class RescueMission:
         if config.BASELINE_MODE == "STOP":
             self.controller.stop()
             return
-        if self.target["found"]:
-            self.found_targets.append({"time": now, "target": dict(self.target), "pose": pose})
-            self.transition(APPROACH_TARGET, now, f"대상 발견 {self.target}")
+        if self.tracker.all_visited():
+            self.transition(RETURN_HOME, now, f"{self.tracker.visited_count()} targets visited")
+            return
+        track = self.tracker.nearest_unvisited(pose)
+        if track is not None:  # a single-frame hit is not enough: wait for confirmation
+            self.approach_target_id = track["id"]
+            self.transition(APPROACH_TARGET, now,
+                            f"target #{track['id']} at ({track['xy'][0]:+.2f}, {track['xy'][1]:+.2f})")
             return
         if now > config.MISSION_TIME_LIMIT:
             self.transition(RETURN_HOME, now, "미션 제한 시간")
@@ -253,7 +265,10 @@ class RescueMission:
         self.follow_navigation(now, pose)
 
     def do_approach_target(self, now, pose):
-        # TODO: 대상의 위치 및 도착 기준을 Detection/미션 모듈과 연결합니다.
+        # TODO(feat/integration): plan to the confirmed target position
+        # (self.tracker, self.approach_target_id), stop at the arrival distance
+        # [DAY-OF], call self.tracker.mark_visited(id), then go back to EXPLORE
+        # (which switches to RETURN_HOME once REQUIRED_TARGETS are visited).
         self.controller.stop()
         if now > config.MISSION_TIME_LIMIT:
             self.transition(RETURN_HOME, now, "미션 제한 시간")
@@ -281,14 +296,13 @@ class RescueMission:
                 self.home_plan_pending = True
                 return
             radius = (config.ROBOT_RADIUS+config.SAFETY_MARGIN)/self.grid.resolution
-            inflated = planning.inflate_obstacles(self.grid.grid, radius)
+            # planning API (PR #15): inflate_obstacles -> cost map (0-254), whole-cell radius;
+            # astar(grid, start, goal, costmap) blocks OCCUPIED cells, UNKNOWN is passable.
+            costmap = planning.inflate_obstacles(self.grid.grid, int(math.ceil(radius)))
             start = self.grid.world_to_grid(pose[0], pose[1])
             goal = self.grid.world_to_grid(self.home_pose[0], self.home_pose[1])
-            path = planning.astar(inflated, start, goal, allow_unknown=False)
-            mode = "known-only"
-            if not path:
-                path = planning.astar(inflated, start, goal, allow_unknown=True)
-                mode = "unknown allowed"
+            path = planning.astar(self.grid.grid, start, goal, costmap)
+            mode = "costmap"
             self.home_plan_pending = False
             print(f"[plan] 복귀 경로 ({mode}): {len(path)} cells")
             if not path:
@@ -360,12 +374,20 @@ class RescueMission:
             parts.append(f"map_missed={self.map_timer.missed}")
         if self.grid is not None:
             frontiers = planning.find_frontiers(self.grid.grid)
-            clusters = planning.cluster_frontiers(frontiers, min_size=3)
+            clusters = [c for c in planning.cluster_frontiers(frontiers) if len(c) >= 3]
             parts.append(f"map free={self.grid.count(0)} occ={self.grid.count(1)} frontiers={len(frontiers)} clusters={len(clusters)}")
             dump = os.environ.get("RESCUE_MAP_DUMP")
             if dump:
                 self.grid.save_pgm(dump)
         parts.append(f"target_found={self.target['found']}")
+        det = self.detection_timer_stats.summary()
+        if det:
+            parts.append(f"det_ms med={det[0] * 1e3:.1f} max={det[2] * 1e3:.1f}")
+        parts.append(f"targets confirmed={len(self.tracker.confirmed())} "
+                     f"visited={self.tracker.visited_count()}/{config.REQUIRED_TARGETS}")
+        if self.target["found"]:
+            parts.append(f"target cx={self.target['cx']} dir={self.target['direction']} "
+                         f"area={self.target['area']:.0f}")
         if self.safety_event or self.sensor_fault:
             parts.append(f"safety={self.sensor_fault or self.safety_event}")
         print("[status] " + " | ".join(parts))

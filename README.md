@@ -99,10 +99,10 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
 | 담당 | 파일 | 지금 있는 것 | 할 일 |
 |---|---|---|---|
 | Mapping + Localization | `localization.py`, `mapping.py` | encoder odometry, LiDAR 좌표 변환, log-odds Occupancy Grid, 영역 초기화 | gyro 보정, 이동 중 지도 품질 검증, (가능하면) Scan Matching, 동적 장애물 필터링 |
-| Detection | `detection.py` | `detect_target(frame)` **stub** (항상 found=False) | 목표 검출 → `found/cx/direction/area` |
-| Planning | `planning.py` | A*, 안전 반경 팽창, 비용지도, frontier 검출·clustering·점수 | 탐색 목표 선택 전략 연결, 대상 접근 경로 |
-| Control + Local Planning | `navigation_control.py`, `control.py` | waypoint 추종, heading PID, LiDAR 감속·정지·재계획 요청, 모터 명령 | 사람 움직임 대응 검증, 안전 관측 정책 개선 |
-| 통합 | `main.py`, `devices.py`, `config.py` | 상태 전이, 센서·지도·Control 연결, A* 복귀 | 탐색 전략 및 대상 접근 연결 |
+| Detection | `detection.py` | 빨간 사과 검출(HSV + 모양·크기·테두리 필터, 크기 기반 거리), `TargetTracker`(3/5 확인, 지도 좌표, 중복 제거, 가림 3 s 유지, 방문 표시), `relative_to` / `is_arrived` | 대회 당일 색 재튜닝 |
+| Planning | `planning.py` | A*, 장애물 inflation, frontier 검출·clustering | frontier 선택, 목표 접근 경로, 복귀 경로 |
+| Control + Local Planning | `control.py` | 바퀴 명령, SafetyMonitor(정지 영역·LiDAR 사각·후진 금지) | `follow_waypoint` 경로 추종, 장애물 회피, recovery |
+| 통합 | `main.py`, `devices.py`, `config.py` | state machine, 센서 읽기, 설정 | 모듈 연결, 모드 추가 |
 
 각 모듈은 Webots 없이 테스트한다: `tests/test_<모듈>.py`. 데이터 형식은 `AGENTS.md`의 "팀 규격"을 따른다.
 
@@ -140,6 +140,25 @@ py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/
 - `frontier_score`와 `select_frontier`에는 `resolution=grid.resolution`, `origin=grid.origin`을 전달한다.
 - `planning.local_planner`는 보조 함수이며 main의 실제 주행은 `navigation_control`이 담당한다.
   legacy `control.follow_waypoint`는 아직 TODO이고 main에서는 사용하지 않는다.
+
+## Detection 사용법 (빨간 사과 2개)
+
+- 연결: `main.py`가 0.128 s마다 `detection.detect()` → `self.tracker.update()`.
+  확정되면 `[detection] CONFIRMED target #N at (x, y)` 로그, status에 `targets confirmed=.. visited=../2`, `det_ms`.
+- 통합/Control이 쓸 것: `track = self.tracker.nearest_unvisited(pose)` → `detection.relative_to(pose, track["xy"])`
+  = (방향 rad, 거리 m) → `detection.is_arrived(pose, track["xy"])`이면 `self.tracker.mark_visited(track["id"])`.
+  2개 방문 시 EXPLORE가 RETURN_HOME으로 전환한다.
+- 값은 모두 `config.py` Detection 섹션: `TARGET_HSV_RANGES`, `TARGET_MIN_FILL`, `TARGET_ASPECT_RANGE`,
+  `TARGET_MAX_RANGE`, `TARGET_ARRIVAL_DISTANCE`(도착 기준, 운영진 답변 후 수정), `TARGET_HEIGHT_RANGE`(기본 None = 높이 가정 없음).
+  사과 **위치는 절대 넣지 않는다**.
+
+### 대회 당일 색 재튜닝 (10분)
+
+1. `$env:RESCUE_FRAME_DUMP="D:\frames"` 설정 후 **같은 PowerShell 창에서** Webots 실행 (대회 world, controller = rescue_robot)
+2. 사과가 보이면 ⏸ → `frame.png`를 `apple1.png`로 복사. 사과 없는 장면도 `none1.png`로 하나
+3. `py -3.10 scripts/tune_hsv.py D:\frames\apple1.png` → 사과 클릭으로 HSV 확인 → 슬라이더로 사과만 칠해지게 → `p` → 출력 줄을 `config.TARGET_HSV_RANGES`에 붙여넣기
+4. `py -3.10 scripts/tune_hsv.py D:\frames\*.png --check` → 사과 사진은 `OK`, `none1.png`는 `OK` 없음
+5. Webots 재실행 → `[detection] CONFIRMED` 확인. `debug.png`: 초록 = 인정, 빨강 = 탈락(이유)
 
 ## Control 주행 시험
 
