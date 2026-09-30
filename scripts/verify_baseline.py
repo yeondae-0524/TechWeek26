@@ -5,7 +5,8 @@ Usage (from the project root, with Python 3.10):
     python scripts/verify_baseline.py            # syntax + architecture + unit tests
     python scripts/verify_baseline.py --webots   # ... + launch Webots smoke test
 
-The Webots smoke test opens worlds/rescue_baseline.wbt (TurtleBot3 Burger),
+The Webots smoke test opens worlds/rescue_baseline.wbt (TurtleBot3 Burger) or
+the world given with --world (e.g. worlds/apartment_rescue.wbt),
 lets the controller run for a few seconds, then closes Webots. It checks that
 the controller started, reached EXPLORE, printed no traceback and that the
 robot did not move (STOP mode, judged from encoder odometry - GPS is not used,
@@ -15,6 +16,7 @@ Exit code 0 = everything passed.
 """
 
 import argparse
+import math
 import os
 import py_compile
 import re
@@ -49,6 +51,7 @@ TEST_GROUPS = [
     ("Scan insertion", "test_scan_insertion"),
     ("Safety monitor", "test_safety"),
     ("Scheduling", "test_scheduling"),
+    ("Rescue worlds", "test_rescue_worlds"),
 ]
 
 # Ground-truth style inputs the competition controller must never use
@@ -125,7 +128,7 @@ def run_unit_tests():
         report(f"Tests: {label}", res.wasSuccessful() and res.testsRun > 0, detail)
 
 
-def run_webots(mode, seconds):
+def run_webots(mode, seconds, world=WORLD):
     log_path = os.path.join(tempfile.gettempdir(), "rescue_baseline_webots.log")
     if os.path.exists(log_path):
         os.remove(log_path)
@@ -134,7 +137,11 @@ def run_webots(mode, seconds):
     if not os.path.exists(WEBOTS_EXE):
         report("Webots launch", False, f"Webots not found at {WEBOTS_EXE} (set WEBOTS_EXE)")
         return
-    proc = subprocess.Popen([WEBOTS_EXE, "--mode=realtime", "--stdout", "--stderr", WORLD], env=env,
+    if not os.path.isfile(world):
+        report("Webots launch", False, f"world not found: {world}")
+        return
+    print(f"[....] world: {world}")
+    proc = subprocess.Popen([WEBOTS_EXE, "--mode=realtime", "--stdout", "--stderr", world], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def log_is_complete():
@@ -186,10 +193,14 @@ def run_webots(mode, seconds):
         report("Webots: control test finished", "control test finished" in log)
         steps = re.findall(r"\[control-test\] (\w+)\s+odom=\(([-+\d.]+), ([-+\d.]+), ([-+\d.]+)deg\)", log)
         if len(steps) >= 6:
-            fwd = float(steps[1][1]) - float(steps[0][1])
-            left = float(steps[3][3]) - float(steps[2][3])
-            report("Webots: forward = +x, left turn = +theta (odometry)", fwd > 0.02 and left > 10.0,
-                   f"dx={fwd:+.3f} m, dtheta={left:+.1f} deg")
+            (x0, y0, t0), (x1, y1, _) = [tuple(map(float, s[1:])) for s in (steps[0], steps[1])]
+            # displacement along the start heading (the official worlds do not start at theta = 0)
+            fwd = (x1 - x0) * math.cos(math.radians(t0)) + (y1 - y0) * math.sin(math.radians(t0))
+            left = (float(steps[3][3]) - float(steps[2][3]) + 180.0) % 360.0 - 180.0
+            blocked = bool(re.search(r"\[safety\] (STOP_ZONE|BLIND_ZONE)", log))
+            report("Webots: forward along heading, left turn = +theta (odometry)",
+                   (fwd > 0.02 or blocked) and left > 10.0,
+                   f"forward={fwd:+.3f} m, dtheta={left:+.1f} deg" + (" (safety stop seen)" if blocked else ""))
 
 
 def main():
@@ -197,6 +208,7 @@ def main():
     parser.add_argument("--webots", action="store_true", help="also run the Webots smoke test")
     parser.add_argument("--mode", default="STOP", choices=["STOP", "CONTROL_TEST"])
     parser.add_argument("--seconds", type=float, default=90.0, help="max wait for the log")
+    parser.add_argument("--world", default=WORLD, help="world file for --webots (default: worlds/rescue_baseline.wbt)")
     args = parser.parse_args()
 
     check_python_version()
@@ -205,7 +217,7 @@ def main():
     check_forbidden_inputs()
     run_unit_tests()
     if args.webots:
-        run_webots(args.mode, args.seconds)
+        run_webots(args.mode, args.seconds, os.path.abspath(args.world))
 
     failed = [name for name, ok in results if not ok]
     print("\n" + ("ALL CHECKS PASSED" if not failed else f"{len(failed)} CHECK(S) FAILED: " + ", ".join(failed)))
