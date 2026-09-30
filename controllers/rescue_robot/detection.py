@@ -5,7 +5,8 @@ Single frame  -> ``detect(frame)`` returns (target dict, list of Blob)
         -> external contours -> per-blob geometry -> filters -> valid blobs
     Filters (docs/research/07_TARGET_SEARCH.md §4-§5):
         * area >= TARGET_MIN_AREA
-        * round: area / enclosing-circle area >= TARGET_MIN_FILL, aspect in range
+        * round: area / enclosing-circle area >= TARGET_MIN_FILL, aspect in range,
+          no corners (approxPolyDP vertices > TARGET_MAX_CORNERS: rejects squares)
         * size-based distance (pinhole, TARGET_SIZE) <= TARGET_MAX_RANGE
         * not touching the image border (TARGET_BORDER_MARGIN): cut-off objects
           have an unreliable shape
@@ -99,6 +100,8 @@ def blob_geometry(contour, width, height):
         cx, cy = moments["m10"] / moments["m00"], moments["m01"] / moments["m00"]
     else:
         cx, cy = x + w / 2.0, y + h / 2.0
+    perimeter = cv2.arcLength(contour, True)
+    vertices = len(cv2.approxPolyDP(contour, 0.015 * perimeter, True)) if perimeter > 0 else 0
     f = focal_length_px(width)
     diameter = max(2.0 * radius, 1.0)
     depth = f * config.TARGET_SIZE / diameter                # along the optical axis [m]
@@ -109,6 +112,7 @@ def blob_geometry(contour, width, height):
         "box": (x, y, w, h), "radius": float(radius),
         "fill": area / (math.pi * radius * radius) if radius > 0 else 0.0,
         "aspect": w / float(h) if h else 0.0,
+        "vertices": vertices,
         "depth": depth, "lateral": lateral,
         "range": math.hypot(depth, lateral),
         "bearing": math.atan2(lateral, depth),               # + = left (CCW)
@@ -130,6 +134,8 @@ def reject_reason(blob, width=None, height=None):
     lo, hi = config.TARGET_ASPECT_RANGE
     if not lo <= blob["aspect"] <= hi:
         return "aspect"
+    if blob["vertices"] <= config.TARGET_MAX_CORNERS:
+        return "corners"
     if blob["range"] > config.TARGET_MAX_RANGE:
         return "too far"
     if config.TARGET_HEIGHT_RANGE is not None:

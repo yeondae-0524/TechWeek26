@@ -82,7 +82,7 @@ def run_check(image):
               f"range={b['range']:.2f} m bearing={np.degrees(b['bearing']):+.1f} deg height={b['center_height']:.2f} m")
     for b, reason in rejected:
         print(f"  REJECTED ({reason:12s}) cx={b['cx']:3d} cy={b['cy']:3d} area={b['area']:7.0f} "
-              f"fill={b['fill']:.2f} aspect={b['aspect']:.2f} range={b['range']:.2f} m")
+              f"fill={b['fill']:.2f} aspect={b['aspect']:.2f} corners={b['vertices']} range={b['range']:.2f} m")
     if not valid and not rejected:
         print("  nothing matches the colour ranges")
 
