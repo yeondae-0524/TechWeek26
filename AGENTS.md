@@ -19,7 +19,7 @@ controllers/
     interfaces.py        #   공통 데이터 규격 (아래 "팀 규격")          [공용: 바꾸면 팀 합의]
     localization.py      #   위치 추정 (encoder odometry)               [Mapping + Localization]
     mapping.py           #   Occupancy Grid                             [Mapping + Localization]
-    detection.py         #   목표 검출 (현재 stub)                      [Detection]
+    detection.py         #   빨간 사과 검출 + TargetTracker             [Detection]
     planning.py          #   A*, inflation, frontier                    [Planning]
     control.py           #   바퀴 명령, SafetyMonitor, 경로 추종(TODO)   [Control + Local Planning]
     scheduling.py        #   초 단위 주기, step 시간 통계
