@@ -14,8 +14,10 @@ Implemented:
     * reset_region() resets log-odds to zero, observation flags to False,
       and grid cells to UNKNOWN
 
-The grid uses Python lists. Pose estimation is external; this module does not
-correct odometry or distinguish moving people from static obstacles.
+Log-odds and observation flags use NumPy arrays, updated in batches per scan.
+The exported grid remains a Python list of lists for existing planner callers.
+Pose estimation is external; this module does not correct odometry or
+distinguish moving people from static obstacles.
 
 NOT implemented (TODO, feat/mapping):
     * scan matching / SLAM (pose correction from the map)
@@ -23,6 +25,8 @@ NOT implemented (TODO, feat/mapping):
 """
 
 import math
+
+import numpy as np
 
 import config
 from interfaces import FREE, OCCUPIED, UNKNOWN
@@ -44,8 +48,8 @@ class OccupancyGrid:
         self.resolution = float(resolution)
         self.origin = (float(origin[0]), float(origin[1]))  # world (x, y) of cell (0,0) lower-left corner
         self.grid = [[UNKNOWN] * self.width for _ in range(self.height)]
-        self.logodds = [[0.0] * self.width for _ in range(self.height)]
-        self.observed = [[False] * self.width for _ in range(self.height)]
+        self.logodds = np.zeros((self.height, self.width), dtype=np.float64)
+        self.observed = np.zeros((self.height, self.width), dtype=np.bool_)
 
     @classmethod
     def centered_on(cls, x, y, width, height, resolution):
@@ -76,14 +80,29 @@ class OccupancyGrid:
             self.grid[row][col] = value
 
     def _update_cell(self, row, col, delta):
-        if not self.in_bounds(row, col):
+        self._update_cells(((row, col),), delta)
+
+    def _update_cells(self, cells, delta):
+        """Batch unique, in-bounds cells; preserve the exported list object.
+
+        insert_scan supplies disjoint hit/miss sets. float64 preserves the
+        previous Python-float threshold behaviour (including hysteresis).
+        """
+        valid = sorted({(r, c) for r, c in cells if self.in_bounds(r, c)})
+        if not valid:
             return
-        self.logodds[row][col] = min(
-            self.LOG_ODDS_MAX,
-            max(self.LOG_ODDS_MIN, self.logodds[row][col] + delta),
-        )
-        self.observed[row][col] = True
-        self._export_cell(row, col)
+        indices = np.asarray(valid, dtype=np.intp)
+        rows, cols = indices[:, 0], indices[:, 1]
+        values = np.clip(self.logodds[rows, cols] + delta,
+                         self.LOG_ODDS_MIN, self.LOG_ODDS_MAX)
+        self.logodds[rows, cols] = values
+        self.observed[rows, cols] = True
+        # Only export changed cells; converting the whole map each scan would
+        # copy unobserved cells and invalidate references held by other modules.
+        for row, col in indices[values > self.LOG_ODDS_OCCUPIED].tolist():
+            self.grid[row][col] = OCCUPIED
+        for row, col in indices[values < self.LOG_ODDS_FREE].tolist():
+            self.grid[row][col] = FREE
 
     def _export_cell(self, row, col):
         value = self.logodds[row][col]
@@ -136,10 +155,8 @@ class OccupancyGrid:
                     # Cells in the minRange blind zone stay as they are.
                     ray = [c for c in ray if self._distance_to(c, origin) >= min_range]
                 misses.update(ray)
-        for cell in misses - hits:
-            self._update_cell(cell[0], cell[1], self.LOG_ODDS_MISS)
-        for cell in hits:
-            self._update_cell(cell[0], cell[1], self.LOG_ODDS_HIT)
+        self._update_cells(misses - hits, self.LOG_ODDS_MISS)
+        self._update_cells(hits, self.LOG_ODDS_HIT)
 
     def _distance_to(self, cell, point):
         x, y = self.grid_to_world(*cell)
