@@ -175,6 +175,12 @@ NAV_WAIT_TIMEOUT = 4.0
 NAV_PROGRESS_TIMEOUT = 10.0
 NAV_PROGRESS_DISTANCE = 0.15
 NAV_REPLAN_PERIOD = 1.0
+# 탈출: 팽창 영역 안에 갇혀 계획이 실패하면 가장 트인 방향으로 돌아 천천히 전진합니다.
+ESCAPE_SPEED = 0.05             # m/s [INITIAL TUNING]
+ESCAPE_DISTANCE = 0.15          # m, 이만큼 전진하면 다시 계획합니다 [INITIAL TUNING]
+ESCAPE_TIMEOUT = 12.0           # s, 회전(~3 s)+SLOW 감속 전진(~6 s) 전체 제한 [INITIAL TUNING]
+ESCAPE_HALF_ANGLE = math.radians(20)   # 트인 방향을 볼 부채꼴 반각 [INITIAL TUNING]
+ESCAPE_HEADING_TOLERANCE = 0.15        # rad [INITIAL TUNING]
 
 def navigation_config():
     """공통 설정을 순수 Python 주행 모듈에 전달합니다. 숫자를 중복 저장하지 않습니다."""
@@ -195,6 +201,7 @@ def navigation_config():
         slow_margin=NAV_SLOW_MARGIN, slow_ratio=NAV_SLOW_RATIO,
         min_points=SAFETY_MIN_POINTS, prediction_time=NAV_PREDICTION_TIME,
         prediction_step=NAV_PREDICTION_STEP, scan_timeout=NAV_SCAN_TIMEOUT,
-        observation_half_angle=NAV_OBSERVATION_HALF_ANGLE, wait_timeout=NAV_WAIT_TIMEOUT,
+        observation_half_angle=NAV_OBSERVATION_HALF_ANGLE, escape_half_angle=ESCAPE_HALF_ANGLE,
+        spin_clearance=SAFETY_SPIN_CLEARANCE, wait_timeout=NAV_WAIT_TIMEOUT,
         progress_timeout=NAV_PROGRESS_TIMEOUT, progress_distance=NAV_PROGRESS_DISTANCE,
     )

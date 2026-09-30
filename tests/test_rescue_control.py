@@ -135,6 +135,32 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(self.monitor.filter(-0.1,0,scan(hits={0:0.125}),0)[2], 'STOP')
         self.assertEqual(self.monitor.filter(0,1,scan(hits={90:0.125}),0)[2], 'STOP')
 
+    def test_escape_moves_away_from_close_obstacle(self):
+        # 0.15 m(안전 반경 0.161 m 안, 회전 여유 0.13 m 밖): 멈춰 있으면 STOP이지만
+        # 제자리 회전과 장애물 반대쪽 전진은 허용하고, 장애물 쪽 전진은 막습니다.
+        left = scan(hits={90:0.15})
+        self.assertEqual(self.monitor.filter(0,0,left,0)[2], 'STOP')
+        self.assertNotIn(self.monitor.filter(0,1,left,0)[2], ('STOP', 'PREDICTED_COLLISION'))
+        behind = scan(hits={0:0.12})   # LiDAR 뒤 0.12 m = 축 기준 0.15 m
+        self.assertEqual(self.monitor.filter(0,0,behind,0)[2], 'STOP')
+        self.assertNotIn(self.monitor.filter(0.05,0,behind,0)[2], ('STOP', 'PREDICTED_COLLISION'))
+        front = scan(hits={180:0.18})  # 축 기준 0.15 m 앞
+        self.assertEqual(self.monitor.filter(0.05,0,front,0)[2], 'STOP')
+
+    def test_escape_heading_prefers_open_observed_side(self):
+        from controllers.rescue_robot.navigation_control import escape_heading
+        hits = {i: 0.3 for i in range(360)}
+        for i in range(60, 121):
+            hits[i] = 2.0             # 왼쪽(90)만 트여 있음
+        self.assertAlmostEqual(escape_heading(scan(hits=hits)), pi/2, delta=0.1)
+        hits = {i: 0.3 for i in range(360)}
+        for i in range(260, 281):
+            hits[i] = inf             # 관측 없는 부채꼴은 후보에서 뺍니다
+        heading = escape_heading(scan(hits=hits))
+        self.assertIsNotNone(heading)
+        self.assertGreater(abs(wrap_angle(heading + pi/2)), 0.3)
+        self.assertIsNone(escape_heading(scan(hits={i: inf for i in range(360)})))
+
     def test_forward_prediction(self):
         self.assertEqual(self.monitor.filter(0.15,0,scan(hits={180:0.30}),0)[2], 'PREDICTED_COLLISION')
 
@@ -145,12 +171,27 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(self.monitor.filter(0.15,0,group,0)[0], 0.075)
 
     def test_unknown_stale_nan_and_incorrect_size(self):
-        self.assertEqual(self.monitor.filter(0.1,0,scan(hits={180:inf}),0)[2], 'UNKNOWN_SPACE')
-        self.assertEqual(self.monitor.filter(0,1,scan(hits={0:inf}),0)[2], 'UNKNOWN_SPACE')
-        self.assertEqual(self.monitor.filter(-0.1,0,scan(hits={0:inf}),0)[2], 'UNKNOWN_SPACE')
+        # 진행 방향 광선이 전부 미관측일 때만 차단합니다.
+        front = {i: inf for i in range(120, 241)}   # 전방 ±60°
+        back = {i: inf for i in list(range(0, 61)) + list(range(300, 360))}
+        self.assertEqual(self.monitor.filter(0.1,0,scan(hits=front),0)[2], 'UNKNOWN_SPACE')
+        self.assertEqual(self.monitor.filter(-0.1,0,scan(hits=back),0)[2], 'UNKNOWN_SPACE')
+        self.assertEqual(self.monitor.filter(0,1,scan(hits={i: inf for i in range(360)}),0)[2],
+                         'UNKNOWN_SPACE')
         self.assertEqual(self.monitor.filter(0.1,0,scan(),1)[2], 'INVALID_SCAN')
         self.assertEqual(self.monitor.filter(0.1,0,scan(hits={0:nan}),0)[2], 'INVALID_SCAN')
         self.assertEqual(self.monitor.filter(0.1,0,Scan((),0),0)[2], 'INVALID_SCAN')
+
+    def test_partial_inf_in_open_space_does_not_block(self):
+        # 넓은 공간: 일부 광선이 최대 거리 밖(inf)이어도 관측된 광선이 있으면 이동합니다.
+        self.assertEqual(self.monitor.filter(0.1,0,scan(hits={180:inf}),0)[2], 'CLEAR')
+        self.assertEqual(self.monitor.filter(-0.1,0,scan(hits={0:inf}),0)[2], 'CLEAR')
+        self.assertEqual(self.monitor.filter(0,1,scan(hits={0:inf}),0)[2], 'CLEAR')
+        partial = {i: inf for i in range(160, 201)}  # 전방 ±20°만 inf, 가장자리는 관측됨
+        self.assertEqual(self.monitor.filter(0.1,0,scan(hits=partial),0)[2], 'CLEAR')
+        # 관측된 장애물은 여전히 궤적 검사로 막힙니다.
+        partial[180] = 0.25
+        self.assertEqual(self.monitor.filter(0.1,0,scan(hits=partial),0)[2], 'PREDICTED_COLLISION')
 
 
 class IntegrationTests(unittest.TestCase):

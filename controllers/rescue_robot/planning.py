@@ -126,6 +126,66 @@ def select_frontier(grid, pose, resolution=None, origin=(0.0, 0.0)):
                frontier_score(frontier, pose, grid, resolution, origin))
 
 
+def clear_footprint(inflated, grid, center, radius_cells):
+    """로봇이 서 있는 원 안의 UNKNOWN 칸과 출발 칸을 FREE로 푼 복사본을 반환합니다.
+
+    LiDAR 최소 거리(0.12 m)와 로봇 몸체 때문에 로봇 주변은 지도에서 UNKNOWN으로
+    남습니다. 로봇이 실제로 차지한 공간은 비어 있으므로 계획 출발점으로 풀어 줍니다.
+    팽창으로 막힌 칸과 원본 OCCUPIED 칸은 그대로 둡니다(출발 칸만 예외).
+    """
+    result = [list(row) for row in inflated]
+    radius = math.ceil(float(radius_cells))
+    row, col = center
+    for dr in range(-radius, radius + 1):
+        for dc in range(-radius, radius + 1):
+            nr, nc = row + dr, col + dc
+            if (dr * dr + dc * dc <= radius * radius and inside(grid, nr, nc)
+                    and grid[nr][nc] != OCCUPIED
+                    and (result[nr][nc] == UNKNOWN or (dr, dc) == (0, 0))):
+                result[nr][nc] = FREE
+    return result
+
+
+def reachable_cells(grid, start):
+    """start에서 FREE 칸만 밟아 갈 수 있는 칸 집합을 반환합니다(4연결 BFS).
+
+    대각선 양옆을 모두 검사하는 8연결 A*의 도달 범위는 4연결 도달 범위와 같습니다.
+    """
+    if not inside(grid, *start) or grid[start[0]][start[1]] != FREE:
+        return set()
+    seen = {start}
+    queue = deque([start])
+    while queue:
+        row, col = queue.popleft()
+        for dr, dc, _ in NEIGHBORS_4:
+            cell = (row + dr, col + dc)
+            if cell not in seen and inside(grid, *cell) and grid[cell[0]][cell[1]] == FREE:
+                seen.add(cell)
+                queue.append(cell)
+    return seen
+
+
+def plan_to_frontier(grid, inflated, start, pose, resolution=None, origin=(0.0, 0.0),
+                     max_tries=5, footprint_cells=0):
+    """도달 가능한 frontier와 경로를 (frontier, path)로 반환합니다. 없으면 (None, []).
+
+    출발점 주변 footprint_cells 반경은 clear_footprint로 풀고, 팽창 지도에서 known FREE
+    칸으로 갈 수 있는 frontier만 점수 순으로 최대 max_tries개 A*를 시도합니다.
+    (점수가 높은 먼 frontier는 끊긴 LiDAR 줄기 끝인 경우가 많아 먼저 걸러 냅니다.)
+    """
+    if not inside(inflated, *start):
+        return None, []
+    inflated = clear_footprint(inflated, grid, start, footprint_cells)
+    reachable = reachable_cells(inflated, start)
+    candidates = [cell for cell in find_frontiers(grid) if cell in reachable]
+    candidates.sort(key=lambda frontier:
+                    -frontier_score(frontier, pose, grid, resolution, origin))
+    for frontier in candidates[:max_tries]:
+        path = astar(inflated, start, frontier, allow_unknown=False, connectivity=8)
+        if path:
+            return frontier, path
+    return None, []
+
 def inflate_obstacles(grid, radius_cells=2):
     """원본을 변경하지 않고 장애물을 팽창한 {-1, 0, 1} 지도를 반환합니다.
 
