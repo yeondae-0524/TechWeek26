@@ -1,6 +1,6 @@
 # 06. Recovery · Progress Monitoring · Blacklist
 
-> ✅ 소스 확인 · 📄 논문만 · ⚠️ 추정
+> ✅ 소스 확인 · 📄 논문만 · ⚠️ 추정. 외부 수치는 [REFERENCE], 우리 거리·시간·횟수는 [INITIAL TUNING]. TB3 facts는 [09](09_WEBOTS_REFERENCES.md), 최종 결정은 [10](10_FINAL_ARCHITECTURE.md).
 
 ---
 
@@ -32,34 +32,34 @@
 
 ### 1.5 RoboCupJunior Rescue Simulation (Erebus, Webots) ✅ [`MainSupervisor.py`](https://github.com/robocup-junior/erebus/blob/master/game/controllers/MainSupervisor/MainSupervisor.py), [`Robot.py`](https://github.com/robocup-junior/erebus/blob/master/game/controllers/MainSupervisor/Robot.py)
 - 심판 supervisor가 로봇이 **20 s 이상 정지하면 자동 Lack-of-Progress** → 마지막 체크포인트로 재배치(감점). 정지 판정은 속도 성분 모두 < 0.001.
-- 즉 대회 환경에선 **"멈춰서 오래 생각하는 것" 자체가 벌점**일 수 있다 → 우리 recovery의 STOP/WAIT에 상한 시간이 필요 (규정 확인 필요 ⚠️).
+- **[REFERENCE, NOT TECH WEEK RULE]** Erebus의 20 s LoP·1 s victim stop은 TECH WEEK 규정이 아니다. WAIT timeout 원칙만 채택한다. TECH WEEK 정지 페널티는 UNCONFIRMED이며 위험한 탈출을 정당화하지 않는다.
 
 ## 2. 비교: m-explore blacklist vs Nav2 recovery vs 우리 제안
 
 | 상황 | m-explore | Nav2 | 우리 제안 |
 |---|---|---|---|
-| 진전 없음 | 30 s 후 frontier blacklist | 10 s 내 0.5 m 못 움직이면 controller 실패 → recovery | **8~10 s 내 경로잔여 −0.05 m 또는 변위 0.1 m 없으면** NO_PROGRESS → ladder |
+| 진전 없음 | 30 s 후 frontier blacklist | 10 s 내 0.5 m 못 움직이면 controller 실패 → recovery | **10 s 내 경로잔여 0.05 m 감소도 변위 0.15 m도 없으면** NO_PROGRESS → ladder |
 | 진동 | 없음 | DWB Oscillation critic / move_base oscillation | 최근 N초 순변위 < 0.05 m & 명령은 계속 있음 → OSCILLATION → ladder |
 | 경로 막힘 | Nav2가 처리 | 계획 재시도 + costmap clear | 05 WAIT(3~5 s) → 재계획 → ladder |
 | 도달 불가 goal | ABORTED → blacklist | 계획 실패 → 재시도 6회 | 거리장 ∞ → 즉시 후보 제외, relax_goal 실패 → blacklist |
-| 끼임(stuck) | – | BackUp 0.30 m | 후방 검사 후 BackUp 0.05~0.08 m + Spin 90° |
+| 끼임(stuck) | – | BackUp 0.30 m | 후방 검사 후 BackUp 0.10–0.15 m + clearance 확인 후 Spin |
 | 보이지 않는 장애물 | – | – | SemExp식 collision_map 기록 |
 | localization 이상 | – | (AMCL 수준) | gyro-odom 불일치/매칭 점수 하락 → 감속 + 제자리 회전 재관측 |
-| 모든 방향 위험 | – | behavior가 COLLISION_AHEAD로 실패 | **STOP 후 주기적 재평가**, 절대 강행 금지, 단 LoP 규정 고려해 최대 대기 시간 설정 |
+| 모든 방향 위험 | – | behavior가 COLLISION_AHEAD로 실패 | **STOP 후 주기적 재평가**, 절대 강행 금지, 미션 예산 소진 시 실패 종료; timeout 때문에 위험 방향으로 움직이지 않음 |
 
 ## 3. 우리 Recovery Ladder (navigator 내부 하위 상태, mission state 아님)
 
 | 단계 | 동작 | 진입 조건 | 종료/다음 |
 |---|---|---|---|
-| R0 WAIT | 정지 2~3 s, 스캔 갱신 | BLOCKED(새 장애물), 첫 NO_PROGRESS | 경로 유효해지면 복귀, 아니면 R1 |
-| R1 CLEAR + REPLAN | 로봇 반경 0.3 m 안 log-odds를 prior로 리셋(ghost 제거) → 재계획 | R0 실패 | 경로 있으면 복귀, 아니면 R2 |
-| R2 SPIN | 가장 열린 방향으로 90°~180° 회전(360° LiDAR라 회전 자체는 안전, 카메라 재관측 효과) | R1 실패, OSCILLATION | 재계획 → 실패 시 R3 |
-| R3 BACKUP | 후방 부채꼴 점검 후 0.05~0.08 m 후진 (Nav2 0.30 m를 e-puck 규모로 축소) | R2 실패, 전방 끼임 | 재계획 → 실패 시 R4 |
+| R0 WAIT | 정지 약 4 s(최대 5 s), 스캔 갱신 | BLOCKED(새 장애물), 첫 NO_PROGRESS | 경로 유효해지면 복귀, 아니면 R1 |
+| R1 CLEAR + REPLAN | 로봇 주변 0.3 m 안의 오래된 ghost 의심 셀만 UNKNOWN prior로 리셋(현재 hit·collision evidence 보존) → 재계획 | R0 실패 | 경로 있으면 복귀, 아니면 R2 |
+| R2 SPIN | 가장 열린 방향으로 90°–180° 회전(TB3 외접 약 0.110 m + 여유, 시작값 0.13 m swept footprint 확인; 근접/저위 사각 때문에 LiDAR만으로 안전 보장 불가) | R1 실패, OSCILLATION | 재계획 → 실패 시 R3 |
+| R3 BACKUP | 후방 부채꼴 점검 후 0.10–0.15 m 후진 (TB3 크기·후방 사각 검증, 후방 미확인 시 건너뜀) | R2 실패, 전방 끼임 | 재계획 → 실패 시 R4 |
 | R4 MARK & GIVE UP GOAL | 앞 셀을 collision_map에 기록(SemExp), 현재 goal blacklist(TTL) | R3 실패 | 상위(mission)에 GOAL_FAILED → 다른 frontier/target |
 | R5 SAFE STOP | 모든 방향 위험 → 정지, 2 s마다 재평가 | 안전한 동작 없음 | 공간 생기면 R0부터 |
 
 - 각 단계는 **안전 모니터 통과가 전제**. 모든 동작은 Nav2 behavior처럼 실행 전 짧은 전방/후방 시뮬레이션.
-- ladder 카운터는 goal 변경 또는 성공적 진전(0.1 m 이동) 시 리셋 (move_base: oscillation reset 시 recovery index 리셋과 같은 방식).
+- ladder 카운터는 goal 변경 또는 성공적 진전(0.15 m 이동) 시 리셋 (move_base: oscillation reset 시 recovery index 리셋과 같은 방식).
 - 같은 goal에서 ladder를 2회 완주하면 무조건 R4.
 
 ## 4. Progress Monitor 설계 (control.py `ProgressMonitor`)
@@ -69,15 +69,15 @@ reset(goal, now, pose)
 update(remaining_path_len, pose, commanded_v, now) -> OK | NO_PROGRESS | STUCK | OSCILLATION
   - best = min(best, remaining)                    # 최선값(진동 강함)
   - if remaining < best_prev - DELTA(0.05): t_prog = now
-  - if |pose - anchor| > RADIUS(0.10): anchor = pose; t_move = now     # Nav2식 변위
-  - if now - max(t_prog, t_move) > TIMEOUT(8~10 s):
+  - if |pose - anchor| > RADIUS(0.15): anchor = pose; t_move = now     # Nav2식 변위
+  - if now - max(t_prog, t_move) > TIMEOUT(10 s):
         return STUCK if 변위≈0 and commanded_v > 0 else NO_PROGRESS
   - 회전 중(recovery SPIN / 제자리 회전)에는 판정 보류 (PoseProgressChecker처럼 회전도 진전 인정)
   - APPROACH_TARGET → EXPLORE 복귀 직후 grace period (m-explore-ros2 resuming_ 개념)
 ```
 
 ## 5. Blacklist 설계 (planning.py `FrontierBlacklist`)
-- 항목: `(x, y, t_added, reason)`; 반경 0.25 m(유클리드); TTL 60~90 s; 모두 blacklist면 1회 전체 초기화(second chance).
+- 항목: `(x, y, t_added, reason)`; 반경 0.30 m(유클리드); TTL 90 s; 모두 blacklist면 1회 전체 초기화(second chance).
 - target goal도 같은 구조 재사용(도달 실패 target은 "나중에 다시").
 
 ## 6. 테스트

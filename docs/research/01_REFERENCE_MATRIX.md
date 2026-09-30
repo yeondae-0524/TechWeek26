@@ -6,7 +6,18 @@
 
 ---
 
-## 1. 최종 Reference Matrix (우리 해커톤 기여도 순)
+## 0. 공식 환경 source (외부 알고리즘 순위와 별도)
+
+확인 2026-09-30. [organizer-confirmed] 조건이 sample보다 우선한다. 사실 근거표는 [09](09_WEBOTS_REFERENCES.md). 외부 숫자는 [REFERENCE], 우리 이식 시작값은 [INITIAL TUNING].
+
+| Source | 고정 버전 / 먼저 볼 파일 | 사용 범위 |
+|---|---|---|
+| [PNU TECH WEEK repo](https://github.com/kyu-rae-kim/PNU-TECHWEEK-260930/tree/383de18193b2644a6b662e87c4736f1c314a8e73) | main, `383de18193b2644a6b662e87c4736f1c314a8e73`; README, worlds, controllers, Apple PROTO | 공식 교육 환경; 규정과 구분 |
+| [Physical AI notebook](https://github.com/kyu-rae-kim/PNU-TECHWEEK-260930/blob/383de18193b2644a6b662e87c4736f1c314a8e73/TECH-WEEK-26_Physical-AI.ipynb) | cell 7/8(설치), 134/136(계획), 147/148(제어), 153–164(FSM/BT), 187(기하); 0-based | OpenCV, A*, look-ahead, FSM 교육 |
+| [TurtleBot3Burger.proto](https://github.com/cyberbotics/webots/blob/R2025a/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto) | Webots R2025a; joints, motors, sensors, extensionSlot, boundingObject | 기하·속도·mount·sync |
+| [RobotisLds01.proto](https://github.com/cyberbotics/webots/blob/R2025a/projects/devices/robotis/protos/RobotisLds01.proto) | R2025a; Lidar fields | 360 samples, 0.12–3.5 m; semantics는 R2025a lidar 문서와 대조 |
+
+## 1. 최종 Reference Matrix (외부 알고리즘의 해커톤 기여도 순)
 
 | Priority | Reference | 분야 | 가져올 아이디어 | 난이도 | 우리 효과 | 직접 구현 여부 |
 |---|---|---|---|---|---|---|
@@ -16,7 +27,7 @@
 | ★★★★☆ | GBPlanner (NTNU) ✅ | Exploration/Homing | 시간 예산 homing 식, exp(−λL) | LOW (식만) | 완◎ 안○ | 식만 이식 |
 | ★★★★☆ | OctoMap / Hector mapping ✅ | Mapping | log-odds 값·clamp·스캔당 1회 갱신 | LOW~MED | 안◎ 완○ | 재구현 |
 | ★★★★☆ | CMU AEDE (pathFollower/localPlanner) ✅ | Local control | 단순 heading 추종, path library(P3) | LOW | 안○ | 개념 |
-| ★★★★☆ | Webots docs/samples + E-puck.proto ✅ | Platform | 동기화 위험, 센서 사실, 샘플 | LOW | 완◎ 안○ | 직접 사용 |
+| ★★★★☆ | Webots docs/samples ✅; E-puck.proto는 practice only | Platform | API·동기화 의미 | LOW | 완◎ 안○ | TB3 사양은 §0 |
 | ★★★★☆ | SemExp ✅ (classical 부분) | Recovery/Target | collision map, 방문 셀 통과, goal 팽창 | LOW | 안○ 창○ | 개념 |
 | ★★★★☆ | FAR planner ✅ | Planning/Dynamic | known→attemptable 폴백, goal 재평가, 관통 레이 dynamic, momentum | MED | 안○ | 개념 |
 | ★★★★☆ | rrt_exploration ✅ (Python) | Exploration | IG=반경 unknown 넓이, hysteresis gain | LOW | 기○ | 재구현 |
@@ -24,7 +35,7 @@
 | ★★★☆☆ | slam_toolbox (Karto CSM) ✅ / Olson 2009 📄 | Localization | 조건부 CSM 구조, odom prior 페널티 | HIGH | 안○ 기◎ | 조건부 축소판 |
 | ★★★☆☆ | Erebus (RCJ Rescue Sim) ✅ | 대회 사례 | 정지 1 s 식별, 20 s LoP → 멈춤 상한 | – | 완○ | 참고만 |
 | ★★★☆☆ | move_base ✅ | Recovery | patience, oscillation, 단계적 리셋 | LOW | 안○ | 개념 |
-| ★★★☆☆ | webots_ros2 e-puck / TurtleBot3 params ✅ | 튜닝값 | e-puck 반경·속도·허용오차, TB3 progress 0.1 m | – | 안○ | 값 참고 |
+| ★★★☆☆ | webots_ros2 e-puck / TurtleBot3 params ✅ | concept/reference only | 보정 절차, 외부 TB3 progress | – | 안○ | e-puck robot-specific tuning 금지 |
 | ★★★☆☆ | PythonRobotics ✅ | 알고리즘 교재 | A*/Theta*/D* Lite/DWA/ICP 예제 (비교·학습용) | – | 기○ | 읽기만 |
 | ★★★☆☆ | TARE ✅ | Exploration | hysteresis 임계, return-home 판단 (TSP는 버림) | – | 기○ | 개념 |
 | ★★★☆☆ | FUEL ✅ | Exploration | 회전 포함 시간 비용, ray-cast IG | – | 창○ | 개념 |
@@ -41,7 +52,7 @@
 1. **Nav2 소스** — RPP·Collision Monitor·progress checker·BT recovery. *Read first*: `nav2_regulated_pure_pursuit_controller/src/regulated_pure_pursuit_controller.cpp`, `include/.../regulation_functions.hpp`, `nav2_collision_monitor/src/polygon.cpp`, `nav2_controller/plugins/simple_progress_checker.cpp`, `nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml`, `nav2_bringup/params/nav2_params.yaml`
 2. **m-explore(-ros2)** — *Read first*: `explore/src/frontier_search.cpp`, `explore/src/explore.cpp`
 3. **hector_exploration_planner** — *Read first*: `hector_exploration_planner/src/hector_exploration_planner.cpp` (`buildexploration_trans_array_`, `cellDanger`, `doInnerExploration`, `findInnerFrontier`)
-4. **Webots R2025a 문서 + E-puck.proto** — *Read first*: [robot.md](https://cyberbotics.com/doc/reference/robot)(synchronization), [lidar.md](https://cyberbotics.com/doc/reference/lidar), [camera.md](https://cyberbotics.com/doc/reference/camera), `projects/robots/gctronic/e-puck/protos/E-puck.proto`
+4. **공식 PNU repo + Webots R2025a TB3/LDS PROTO** — *Read first*: [robot.md](https://cyberbotics.com/doc/reference/robot)(synchronization), [lidar.md](https://cyberbotics.com/doc/reference/lidar), [camera.md](https://cyberbotics.com/doc/reference/camera), §0 TB3/LDS 링크 (E-puck.proto는 practice 기록만)
 5. **GBPlanner** — *Read first*: `gbplanner/src/rrg.cpp` `homingRequired`, path gain 루프
 6. **OctoMap + Hector mapping** — *Read first*: `octomap/src/AbstractOccupancyOcTree.cpp` L42-47, `hector_mapping/include/hector_slam_lib/map/GridMapLogOdds.h`, `OccGridMapBase.h`
 7. **CMU AEDE** — *Read first*: `src/local_planner/src/pathFollower.cpp`, `src/local_planner/launch/local_planner.launch`
@@ -102,7 +113,7 @@
 
 **TurtleBot3** — ROBOTIS; ROS2; Apache-2.0; [repo](https://github.com/ROBOTIS-GIT/turtlebot3) @fc817ce ✅ · ★★★☆☆ · `turtlebot3_navigation2/param/burger.yaml` (controller 10 Hz, progress 0.1 m/10 s, inflation 0.5/scaling 5.0, DWB critics) · 값 참고
 
-**webots_ros2** — Cyberbotics; Python/C++; ROS2; Apache-2.0; [repo](https://github.com/cyberbotics/webots_ros2) @85368b7 ✅ · ★★★☆☆ · e-puck `nav2_params.yaml`, `drive_calibrator.py` · 값·절차 참고
+**webots_ros2** — Cyberbotics; Python/C++; ROS2; Apache-2.0; [repo](https://github.com/cyberbotics/webots_ros2) @85368b7 ✅ · ★★★☆☆ · e-puck `nav2_params.yaml`, `drive_calibrator.py` · practice/reference only; 보정 절차 개념만, 기하·속도 이식 금지
 
 ### 3.3 Mapping / Localization
 

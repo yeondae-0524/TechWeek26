@@ -1,6 +1,6 @@
 # 08. Return Home (시간 예산 기반 복귀)
 
-> ✅ 소스 확인 · 📄 논문만 · ⚠️ 추정
+> ✅ 소스 확인 · 📄 논문만 · ⚠️ 추정. 외부 숫자는 [REFERENCE], 우리 ETA·거리·주기는 [INITIAL TUNING]. **GPS/Compass 미사용 [organizer-confirmed]**, Supervisor pose도 competition 입력에서 제외한다.
 
 ---
 
@@ -17,7 +17,7 @@
 ## 2. 우리 설계
 
 ### 2.1 home_pose
-- 현재 `do_initialize`에서 `config.START_POSE`로 설정 (대회가 시작 pose를 제공하므로 TF 조회 실패 같은 문제 없음). 유지.
+- 추천: 시작 자세를 local map frame 원점으로 잡아 `home_pose=(0,0,0)`으로 저장한다. local +x는 시작 heading, +y는 시작 좌측, CCW 양수. 제공 world 시작 pose는 local↔world 정적 변환에만 사용한다. 현재 코드의 world `START_POSE` 방식과 구분하며 이후 구현에서 모든 pose/grid/target에 같은 변환을 적용한다. 복귀는 localization estimate + occupancy map 기반이다.
 
 ### 2.2 트리거 (Q11, GBPlanner 식을 우리 규모로)
 
@@ -26,12 +26,12 @@ ETA_home   = L_home / v_avg + N_turns * (π/2)/ω + T_margin_fixed
 L_home     = distance_field(from robot)[home_cell] * res     # 04의 거리장, known-only
 v_avg      = 실측 평균 주행속도 (로그에서 갱신, 초기값 0.6 * MAX_LINEAR_SPEED)
 trigger if  time_left < SAFETY_FACTOR * ETA_home + T_margin
-            SAFETY_FACTOR 1.3~1.5, T_margin 10~20 s   (GBPlanner는 +20 s 고정)
+            SAFETY_FACTOR = 1.4, T_margin = 15 s [INITIAL TUNING] (GBPlanner +20 s는 REFERENCE)
 ```
-- 매 1 Hz 계획 주기에 계산 (거리장을 이미 계산하므로 추가비용 ≈ 0).
+- 약 1 s마다 예산을 확인하되 전체 계획은 이벤트 기반이다. 유효한 거리장/경로 길이를 재사용하고 무효해지면 재계산한다. 거리장 자체는 비용이 크다(04). `T_margin_fixed=0`으로 시작해 margin 이중 계산을 피한다. TB3 v=0.15 m/s라면 v_avg 초기 0.09 m/s [INITIAL TUNING]; 실제 회전·대기 포함 주행 로그로 교체한다.
 - target 접근 결정에도 사용: `time_left < SF * (ETA_target + ETA_target→home) + margin` 이면 접근 포기(위치만 기록).
 - 현재 baseline의 고정 `MISSION_TIME_LIMIT` 비교보다 **맵이 클수록/멀리 있을수록 일찍 복귀**하므로 안전.
-- ⚠️ 시간 기준(시뮬레이션 시간 vs 실시간)은 당일 규정으로 확인. 비동기 모드라면 둘이 다를 수 있음 (09 참고).
+- ⚠️ 시간 기준(시뮬레이션 시간 vs 실시간)은 당일 규정으로 확인. 동기/비동기 어느 모드에서도 두 시간은 다를 수 있음 (09 참고).
 
 ### 2.3 경로 전략 (우선순위)
 1. **known-only A\*** (`allow_unknown=False`) on inflated 최종 지도 + LOS smoothing.
@@ -39,7 +39,7 @@ trigger if  time_left < SAFETY_FACTOR * ETA_home + T_margin
 3. 실패 → **인플레이션 반경 축소**(r_robot + 작은 margin) 재계획 (속도 제한 걸고).
 4. 실패 → **breadcrumb 경로**: 지나온 궤적(셀 리스트)을 역순으로 — 로봇이 실제로 지나간 곳이라 정적으로는 통과 가능 (GBPlanner `homing_backward`, SemExp "방문 셀은 통과 가능" 개념). 루프 제거(같은 셀 재방문 구간 삭제) 후 smoothing.
 5. 실패 → `allow_unknown=True` 낙관적 계획 (FAR attemptable 모드와 같은 취지).
-6. 전부 실패 → recovery ladder(06) 반복, 안전 정지 유지하며 1 Hz 재시도.
+6. 전부 실패 → 제한된 recovery ladder(06), 안전 정지 중 약 1 Hz 상태 확인; 새 정보가 생길 때만 재계획하고 미션 종료 시 실패 기록.
 
 ### 2.4 도착 및 방향
 - 위치: `HOME_TOLERANCE`(현재 0.10 m) — 규정 기준에 맞춤.
@@ -52,7 +52,7 @@ trigger if  time_left < SAFETY_FACTOR * ETA_home + T_margin
 |---|---|
 | 탐색이 "끝나야만" 복귀 | 시간 예산 트리거가 항상 감시 |
 | 실패 시 아무것도 안 함 | 6단계 경로 전략 + recovery |
-| TF 실패 시 기능 꺼짐 | 시작 pose는 config 제공값 |
+| TF 실패 시 기능 꺼짐 | 시작 pose는 local 원점, 제공값은 world 변환에만 사용 |
 | 목표물 개념 없음 | target 접근 결정에도 ETA 사용 |
 
 ## 3. 테스트
@@ -62,3 +62,8 @@ trigger if  time_left < SAFETY_FACTOR * ETA_home + T_margin
 - breadcrumb 루프 제거.
 - 도착 후 heading 정렬 (요구 시).
 - target 접근 포기 조건.
+
+
+### 안전 불변 조건
+
+Inflation 축소는 여유분만 줄이고 검증된 물리 footprint(보수적 원 0.111 m 시작)보다 작게 하지 않는다. 최근 hit·충돌 증거는 ghost clear/방문 셀 보정에서 제외한다. Breadcrumb은 과거 통과 기록이지 현재 장애물 부재 보장이 아니다. unknown 허용 경로는 탐색 후보이며 현재 센서로 다음 이동 구간이 검증되지 않으면 전진하지 않는다. 10 §2.2의 bounded planning 및 sensor-age 정지 조건을 그대로 따른다.
