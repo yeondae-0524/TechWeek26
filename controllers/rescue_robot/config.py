@@ -73,10 +73,11 @@ DETECTION_PERIOD = 0.128    # s [INITIAL TUNING] camera read + detect_target()
 # Occupancy grid
 # ---------------------------------------------------------------------------
 GRID_RESOLUTION = 0.05  # m / cell
-# Official example worlds are ~13 m wide [DERIVED] and the grid is centred on
-# the start pose, so >= 20 m is recommended (research 03 §A.4, 09 §11).
-GRID_WIDTH = 400        # number of columns (x direction) -> 20.0 m  [DAY-OF]
-GRID_HEIGHT = 400       # number of rows    (y direction) -> 20.0 m  [DAY-OF]
+# The grid is centred on the start pose. Official apartment.wbt spans ~12.4 x
+# 13.1 m and its robot starts near an edge (-0.3, -7.5) [OFFICIAL], so the
+# grid must be ~2x the world size: 26 m covers any ~13 m world from any start.
+GRID_WIDTH = 520        # number of columns (x direction) -> 26.0 m  [DAY-OF]
+GRID_HEIGHT = 520       # number of rows    (y direction) -> 26.0 m  [DAY-OF]
 
 # World coordinate of the lower-left corner of cell (0, 0).
 # None -> the grid is centred on START_POSE (map size is unknown in advance).
