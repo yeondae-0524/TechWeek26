@@ -1197,6 +1197,7 @@ TurtleBot3Burger {
   translation -1.2652295569384346 1.8113497890341583 -0.0005646579196471394
   rotation -0.004685403260124537 -0.0215291969534059 -0.9997572408714185 0.4244768832388266
   controller "rescue_robot"
+  customData "{\"start_pose\": [-1.265, 1.811, -0.4241150082346221]}"
   extensionSlot [
     Camera {
       translation 0.05 0 -0.08

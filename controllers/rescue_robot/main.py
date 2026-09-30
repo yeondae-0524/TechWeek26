@@ -90,6 +90,7 @@ class RescueMission:
         self.test_index = -1
         self.safety_event = None
         self.sensor_fault = None
+        self.sensor_status_reported = False
 
     def run(self):
         """정상 종료와 예외 발생 모두에서 마지막 모터 명령을 정지로 바꿉니다."""
@@ -138,9 +139,10 @@ class RescueMission:
             fault = "encoder 값 오류"
         elif ranges is None:
             fault = "LiDAR 값 오류"
-        if fault != self.sensor_fault:
+        if not self.sensor_status_reported or fault != self.sensor_fault:
             print(f"[safety] {fault} -> STOP" if fault else "[safety] 필수 센서 정상")
             self.sensor_fault = fault
+            self.sensor_status_reported = True
 
     def apply_safety(self, now, encoders, ranges):
         """경로 추종과 구동계 점검 모두에 원시 LiDAR 안전 검사를 마지막에 적용합니다."""

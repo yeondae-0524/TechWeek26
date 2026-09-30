@@ -17,29 +17,20 @@ HOME_TOLERANCE = 0.10
 STATUS_PRINT_PERIOD = 2.0
 
 # 기존 Localization과 Mapping은 제공된 시작 pose와 같은 좌표계를 사용합니다.
-# 선택한 breakroom 시험 world의 제공된 시작 pose입니다. 다른 world에서는 변경합니다.
-START_POSE = (-1.265, 1.811, math.radians(-24.3))
+# customData가 없는 경우의 기본값은 팀 검증 world rescue_baseline의 제공된 시작점입니다.
+# 다른 world는 제공된 customData.start_pose를 우선 사용합니다.
+START_POSE = (-0.5, -0.8, 0.0)
 START_POSE_FROM_CUSTOM_DATA = True
 
-# ---------------------------------------------------------------------------
-# Scheduling (seconds, never step counts: the official driving worlds use a
-# 64 ms basicTimeStep, some test worlds 32 ms [OFFICIAL]; research 10 §2.2)
-# ---------------------------------------------------------------------------
-MAP_UPDATE_PERIOD = 0.128   # s [INITIAL TUNING] one new scan into the grid
-DETECTION_PERIOD = 0.128    # s [INITIAL TUNING] camera read + detect_target()
+# 주기는 step 개수가 아닌 초 단위입니다. 공식 주행 world는 64ms, 일부 시험 world는 32ms입니다.
+MAP_UPDATE_PERIOD = 0.128
+DETECTION_PERIOD = 0.128
 
-# ---------------------------------------------------------------------------
-# Occupancy grid
-# ---------------------------------------------------------------------------
-GRID_RESOLUTION = 0.05  # m / cell
-# The grid is centred on the start pose. Official apartment.wbt spans ~12.4 x
-# 13.1 m and its robot starts near an edge (-0.3, -7.5) [OFFICIAL], so the
-# grid must be ~2x the world size: 26 m covers any ~13 m world from any start.
-GRID_WIDTH = 520        # number of columns (x direction) -> 26.0 m  [DAY-OF]
-GRID_HEIGHT = 520       # number of rows    (y direction) -> 26.0 m  [DAY-OF]
-
-# World coordinate of the lower-left corner of cell (0, 0).
-# None -> the grid is centred on START_POSE (map size is unknown in advance).
+# 0.05m 셀, 총 26×26m 지도입니다. 시작점 중심으로 배치해 가장자리 시작점도 포함합니다.
+GRID_RESOLUTION = 0.05
+GRID_WIDTH = 520
+GRID_HEIGHT = 520
+# None이면 시작점 중심, 지정하면 [0][0] 셀 왼쪽 아래의 미터 좌표입니다.
 GRID_ORIGIN = None
 
 # 공식 사양: 바퀴 반경, 바퀴 간격, 모터 최대 각속도입니다.
