@@ -452,3 +452,86 @@ def local_planner(
         speed,
         error
     )
+
+def cluster_frontiers(frontiers):
+
+    clusters = []
+    visited = set()
+
+    frontier_set = set(frontiers)
+
+    for point in frontiers:
+
+        if point in visited:
+            continue
+
+        cluster = []
+        queue = deque([point])
+
+        visited.add(point)
+
+        while queue:
+
+            current = queue.popleft()
+            cluster.append(current)
+
+            r,c = current
+
+            for dr,dc,_ in NEIGHBORS:
+
+                nxt = (r+dr,c+dc)
+
+                if nxt in frontier_set and nxt not in visited:
+                    visited.add(nxt)
+                    queue.append(nxt)
+
+        clusters.append(cluster)
+
+    return clusters
+
+def inflate_obstacles(grid, radius_cells=2):
+
+    costmap = [
+        [0 for _ in row]
+        for row in grid
+    ]
+
+    for r in range(len(grid)):
+
+        for c in range(len(grid[0])):
+
+            if grid[r][c] == OCCUPIED:
+
+                for dr in range(-radius_cells, radius_cells+1):
+
+                    for dc in range(-radius_cells, radius_cells+1):
+
+                        nr = r+dr
+                        nc = c+dc
+
+
+                        if not inside(grid,nr,nc):
+                            continue
+
+
+                        dist = abs(dr)+abs(dc)
+
+
+                        if dist == 0:
+                            cost = 254
+
+                        else:
+                            cost = max(
+                                253 - dist*30,
+                                1
+                            )
+
+
+                        costmap[nr][nc] = max(
+                            costmap[nr][nc],
+                            cost
+                        )
+
+
+    return costmap
+
