@@ -7,6 +7,7 @@
     python scripts/tune_hsv.py D:/Dev/projects/frames/frame.png            # sliders
     python scripts/tune_hsv.py frame.png --pixel 320 300 330 310           # HSV of pixels
     python scripts/tune_hsv.py frame.png --check                           # run the detector
+    python scripts/tune_hsv.py D:/frames/*.png --check                     # many images at once
 
 Window keys: click = print HSV at that pixel, p = print the config line,
 s = save mask_tuned.png next to the image, q / Esc = quit.
@@ -15,6 +16,7 @@ OpenCV HSV: H 0-179, S 0-255, V 0-255.
 """
 
 import argparse
+import glob
 import os
 import sys
 
@@ -118,24 +120,30 @@ def run_gui(image, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("image", help="BGR image, e.g. frame.png from RESCUE_FRAME_DUMP")
+    parser.add_argument("image", nargs="+", help="BGR image(s), e.g. frame.png from RESCUE_FRAME_DUMP")
     parser.add_argument("--pixel", nargs="+", type=int, metavar="X Y", help="print HSV at pixel pairs")
     parser.add_argument("--check", action="store_true", help="run the detector with config values")
     args = parser.parse_args()
     if cv2 is None:
         raise SystemExit("OpenCV/NumPy not installed: py -3.10 -m pip install numpy==1.23.5 opencv-python==4.8.0.74")
-    image = cv2.imread(args.image)
+    paths = [p for pattern in args.image for p in (sorted(glob.glob(pattern)) or [pattern])]
+    if args.check:
+        for path in paths:
+            image = cv2.imread(path)
+            print(f"== {path}" + ("" if image is not None else "  (cannot read)"))
+            if image is not None:
+                run_check(image)
+        return 0
+    image = cv2.imread(paths[0])
     if image is None:
-        raise SystemExit(f"cannot read {args.image}")
+        raise SystemExit(f"cannot read {paths[0]}")
     if args.pixel:
         if len(args.pixel) % 2:
             raise SystemExit("--pixel needs X Y pairs")
         for x, y in zip(args.pixel[::2], args.pixel[1::2]):
             print(f"pixel ({x}, {y}) HSV = {hsv_at(image, x, y)}")
-    elif args.check:
-        run_check(image)
     else:
-        run_gui(image, args.image)
+        run_gui(image, paths[0])
     return 0
 
 

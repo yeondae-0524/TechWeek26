@@ -7,6 +7,8 @@ Single frame  -> ``detect(frame)`` returns (target dict, list of Blob)
         * area >= TARGET_MIN_AREA
         * round: area / enclosing-circle area >= TARGET_MIN_FILL, aspect in range
         * size-based distance (pinhole, TARGET_SIZE) <= TARGET_MAX_RANGE
+        * not touching the image border (TARGET_BORDER_MARGIN): cut-off objects
+          have an unreliable shape
         * optional height window TARGET_HEIGHT_RANGE (OFF by default: where the
           apples lie is unknown; only enable it if the organizers confirm it)
     ``detect_target(frame)`` returns only the shared target dict:
@@ -21,6 +23,9 @@ Multiple frames -> ``TargetTracker``
     flag so a target is counted once.
 
 Input frame: NumPy (H, W, 3) BGR uint8 from devices.read_camera_frame(), or None.
+
+Helpers for Control / integration: relative_to(pose, xy) -> (bearing, distance),
+is_arrived(pose, xy), TargetTracker.get(id) / mark_visited(id).
 
 NOT implemented (TODO): LiDAR range fusion (an apple lower than the 0.173 m LiDAR
 plane is not seen by the LiDAR, so size-based range is used), occlusion memory /
@@ -111,10 +116,15 @@ def blob_geometry(contour, width, height):
     }
 
 
-def reject_reason(blob):
+def reject_reason(blob, width=None, height=None):
     """None if the blob looks like a target, else a short reason."""
     if blob["area"] < config.TARGET_MIN_AREA:
         return "small"
+    if width is not None and height is not None:
+        x, y, w, h = blob["box"]
+        m = config.TARGET_BORDER_MARGIN
+        if x <= m or y <= m or x + w >= width - m or y + h >= height - m:
+            return "border"
     if blob["fill"] < config.TARGET_MIN_FILL:
         return "not round"
     lo, hi = config.TARGET_ASPECT_RANGE
@@ -137,7 +147,7 @@ def find_blobs(frame, hsv_ranges=None):
     valid, rejected = [], []
     for contour in contours:
         blob = blob_geometry(contour, width, height)
-        reason = reject_reason(blob)
+        reason = reject_reason(blob, width, height)
         if reason is None:
             valid.append(blob)
         elif blob["area"] >= 4:  # ignore single-pixel noise in the debug output
@@ -209,13 +219,14 @@ class TargetTracker:
     """
 
     def __init__(self, window=None, min_hits=None, dedup_radius=None,
-                 range_error=None, max_spread=None, required=None):
+                 range_error=None, max_spread=None, required=None, forget_s=None):
         self.window = config.TRACK_WINDOW if window is None else window
         self.min_hits = config.TRACK_MIN_HITS if min_hits is None else min_hits
         self.dedup_radius = config.TRACK_DEDUP_RADIUS if dedup_radius is None else dedup_radius
         self.range_error = config.TRACK_RANGE_ERROR if range_error is None else range_error
         self.max_spread = config.TRACK_MAX_SPREAD if max_spread is None else max_spread
         self.required = config.REQUIRED_TARGETS if required is None else required
+        self.forget_s = config.TRACK_FORGET_S if forget_s is None else forget_s
         self.tracks = []
         self._next_id = 1
 
@@ -247,9 +258,9 @@ class TargetTracker:
         for track in self.tracks:
             if track["id"] not in matched:
                 track["hits"].append(False)
-        # tentative tracks that were not seen during a whole window are dropped
+        # tentative tracks survive short occlusions (TRACK_FORGET_S), then are dropped
         self.tracks = [t for t in self.tracks
-                       if t["confirmed"] or len(t["hits"]) < self.window or any(t["hits"])]
+                       if t["confirmed"] or now - t["last_seen"] <= self.forget_s]
         return newly_confirmed
 
     def _tolerance(self, base, rng):
@@ -285,6 +296,9 @@ class TargetTracker:
             return None
         return min(candidates, key=lambda t: math.hypot(t["xy"][0] - pose[0], t["xy"][1] - pose[1]))
 
+    def get(self, track_id):
+        return next((t for t in self.tracks if t["id"] == track_id), None)
+
     def mark_visited(self, track_id):
         for track in self.tracks:
             if track["id"] == track_id:
@@ -295,6 +309,23 @@ class TargetTracker:
 
     def all_visited(self):
         return self.required is not None and self.visited_count() >= self.required
+
+
+def relative_to(pose, xy):
+    """(bearing [rad, + = left], distance [m]) of world point xy seen from the robot pose.
+
+    For Control / integration: turn by ``bearing`` and drive ``distance`` towards a
+    confirmed target (tracker.get(id)["xy"]).
+    """
+    dx, dy = xy[0] - pose[0], xy[1] - pose[1]
+    bearing = math.atan2(dy, dx) - pose[2]
+    return math.atan2(math.sin(bearing), math.cos(bearing)), math.hypot(dx, dy)
+
+
+def is_arrived(pose, xy, distance=None):
+    """True when the robot centre is within TARGET_ARRIVAL_DISTANCE of the target."""
+    distance = config.TARGET_ARRIVAL_DISTANCE if distance is None else distance
+    return relative_to(pose, xy)[1] <= distance
 
 
 def _mean(points):

@@ -84,6 +84,24 @@ class TestSingleFrame(unittest.TestCase):
         self.assertEqual(valid, [])
         self.assertIn(rejected[0][1], ("aspect", "not round"))
 
+    def test_cut_off_at_border_rejected(self):
+        frame = blank()
+        cv2.circle(frame, (10, 300), 40, RED, -1)      # apple cut by the left edge
+        valid, rejected, _ = detection.find_blobs(frame)
+        self.assertEqual(valid, [])
+        self.assertEqual(rejected[0][1], "border")
+        frame = blank()
+        cv2.circle(frame, (60, 300), 40, RED, -1)      # fully visible near the edge
+        self.assertTrue(detection.detect_target(frame)["found"])
+
+    def test_red_panel_rejected_next_to_apple(self):
+        # breakroom_teleop_yolo: red cabinet panel (wide rectangle) behind the apple
+        frame = draw_apple(blank(), 0.5, 0.1)
+        cv2.rectangle(frame, (330, 150), (470, 190), (0, 0, 200), -1)
+        valid, rejected, _ = detection.find_blobs(frame)
+        self.assertEqual(len(valid), 1)
+        self.assertTrue(any(r in ("aspect", "not round") for _, r in rejected))
+
     def test_too_far_rejected(self):
         valid, rejected, _ = detection.find_blobs(draw_apple(blank(), 6.0, shaded=False))
         self.assertEqual(valid, [])
@@ -98,8 +116,10 @@ class TestSingleFrame(unittest.TestCase):
         green = draw_apple(blank(), 1.0, color=GREEN, shaded=False)
         self.assertFalse(detection.detect_target(green)["found"])                      # default = red
         self.assertTrue(detection.detect_target(green, hsv_ranges=GREEN_RANGES)["found"])
+        # hue wrap-around: two ranges on both ends of 0..179 (independent of tuned config values)
         wrap = draw_apple(blank(), 1.0, color=(40, 0, 230), shaded=False)              # hue ~175
-        self.assertTrue(detection.detect_target(wrap)["found"])
+        wrap_ranges = [((0, 100, 60), (10, 255, 255)), ((170, 100, 60), (179, 255, 255))]
+        self.assertTrue(detection.detect_target(wrap, hsv_ranges=wrap_ranges)["found"])
 
     def test_direction_borders(self):
         self.assertEqual(detection.direction_of(213, W), "LEFT")
@@ -157,7 +177,34 @@ class TestTargetTracker(unittest.TestCase):
         for k, hit in enumerate([True, True, False, False, False, False, False]):
             t.update(k * 0.128, (0, 0, 0), [blob(1.0)] if hit else [])
         self.assertEqual(t.confirmed(), [])
-        self.assertEqual(t.tracks, [])   # tentative track removed after a window of misses
+        self.assertEqual(len(t.tracks), 1)   # kept while briefly unseen (occlusion)
+        t.update(0.128 + config.TRACK_FORGET_S + 0.1, (0, 0, 0), [])
+        self.assertEqual(t.tracks, [])       # forgotten after TRACK_FORGET_S
+
+    def test_candidate_survives_short_occlusion(self):
+        t = self.tracker()
+        t.update(0.0, (0, 0, 0), [blob(1.0)])
+        t.update(0.128, (0, 0, 0), [blob(1.0)])
+        for k in range(2, 12):                       # ~1.3 s hidden (person walks by)
+            t.update(k * 0.128, (0, 0, 0), [])
+        t.update(12 * 0.128, (0, 0, 0), [blob(1.0)])
+        self.assertEqual(len(t.tracks), 1)
+        t.update(13 * 0.128, (0, 0, 0), [blob(1.0)])
+        t.update(14 * 0.128, (0, 0, 0), [blob(1.0)])
+        self.assertEqual(len(t.confirmed()), 1)
+
+    def test_relative_to_and_arrival(self):
+        bearing, dist = detection.relative_to((0.0, 0.0, math.pi / 2), (-1.0, 1.0))
+        self.assertAlmostEqual(bearing, math.pi / 4)     # target is 45 deg to the left
+        self.assertAlmostEqual(dist, math.sqrt(2))
+        self.assertTrue(detection.is_arrived((0.0, 0.0, 0.0), (0.2, 0.0), distance=0.3))
+        self.assertFalse(detection.is_arrived((0.0, 0.0, 0.0), (0.5, 0.0), distance=0.3))
+        t = self.tracker()
+        for k in range(3):
+            t.update(k * 0.128, (0, 0, 0), [blob(1.0)])
+        track = t.confirmed()[0]
+        self.assertIs(t.get(track["id"]), track)
+        self.assertIsNone(t.get(999))
 
     def test_same_apple_from_moving_robot_is_one_target(self):
         t = self.tracker()

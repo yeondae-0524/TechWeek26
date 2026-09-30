@@ -84,6 +84,7 @@ class RescueMission:
         self.last_status_time = -1e9
         self.target = empty_target()
         self.tracker = detection.TargetTracker()  # confirmed targets with world (x, y)
+        self.detection_timer_stats = StepTimer()  # camera read + detect() time
         self.approach_target_id = None
         self.home_path = None
         self.home_plan_pending = False
@@ -115,7 +116,9 @@ class RescueMission:
             self.grid.insert_scan(pose, ranges, self.devices.lidar_fov,
                                   self.devices.lidar_max_range, min_range=self.devices.lidar_min_range)
         if self.detection_timer.due(now):
+            started_detection = time.perf_counter()
             self.target, blobs = detection.detect(self.devices.read_camera_frame())
+            self.detection_timer_stats.add(time.perf_counter() - started_detection)
             for track in self.tracker.update(now, pose, blobs):
                 print(f"[detection] CONFIRMED target #{track['id']} at "
                       f"({track['xy'][0]:+.2f}, {track['xy'][1]:+.2f})")
@@ -375,6 +378,9 @@ class RescueMission:
             if dump:
                 self.grid.save_pgm(dump)
         parts.append(f"target_found={self.target['found']}")
+        det = self.detection_timer_stats.summary()
+        if det:
+            parts.append(f"det_ms med={det[0] * 1e3:.1f} max={det[2] * 1e3:.1f}")
         parts.append(f"targets confirmed={len(self.tracker.confirmed())} "
                      f"visited={self.tracker.visited_count()}/{config.REQUIRED_TARGETS}")
         if self.target["found"]:
