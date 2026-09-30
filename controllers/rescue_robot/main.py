@@ -265,13 +265,114 @@ class RescueMission:
         self.follow_navigation(now, pose)
 
     def do_approach_target(self, now, pose):
-        # TODO(feat/integration): plan to the confirmed target position
-        # (self.tracker, self.approach_target_id), stop at the arrival distance
-        # [DAY-OF], call self.tracker.mark_visited(id), then go back to EXPLORE
-        # (which switches to RETURN_HOME once REQUIRED_TARGETS are visited).
-        self.controller.stop()
+        """확정된 target 앞 standoff 지점까지 계획·추종하고 도착하면 방문 처리합니다."""
+        if config.BASELINE_MODE == "STOP":
+            self.controller.stop()
+            return
         if now > config.MISSION_TIME_LIMIT:
             self.transition(RETURN_HOME, now, "미션 제한 시간")
+            return
+        track = self.tracker.get(self.approach_target_id)
+        if track is None or track["visited"] or track.get("skipped"):
+            self.controller.stop()
+            self.transition(EXPLORE, now, "approach target unavailable")
+            return
+        if getattr(self, "_approach_id", None) != track["id"]:
+            self.reset_approach(track["id"], now)
+        if detection.is_arrived(pose, track["xy"]):
+            self.controller.stop()
+            self.tracker.mark_visited(track["id"])
+            self.approach_log(f"[approach] visited #{track['id']}")
+            self.transition(EXPLORE, now, f"target #{track['id']} visited")
+            return
+        if self.approach_rotating:
+            self.rotate_towards_target(now, pose, track)
+            return
+        if now - self.approach_attempt_start > config.APPROACH_TIMEOUT:
+            self.approach_attempts += 1
+            if self.approach_attempts > config.APPROACH_MAX_ATTEMPTS:
+                self.controller.stop()
+                self.tracker.skip(track["id"])
+                self.approach_log(f"[approach] skipped #{track['id']}")
+                self.transition(EXPLORE, now, f"target #{track['id']} skipped")
+                return
+            self.approach_log(f"[approach] timeout #{track['id']}: turn to target "
+                              f"(attempt {self.approach_attempts})")
+            self.approach_rotating = True
+            self.approach_path_ready = False
+            self.navigation.set_path([])
+            self.rotate_towards_target(now, pose, track)
+            return
+        self.follow_approach_plan(now, pose, track)
+
+    # ---------------------------------------------------------- approach helpers
+    def reset_approach(self, track_id, now):
+        self._approach_id = track_id
+        self.approach_attempts = 1
+        self.approach_attempt_start = now
+        self.approach_rotating = False
+        self.approach_path_ready = False
+        self.approach_plan_pending = False
+        self.next_approach_plan_time = now
+        self.approach_goal = None
+        self.last_approach_log = None
+        self.approach_log(f"[approach] start #{track_id}")
+
+    def approach_log(self, message):
+        if message != getattr(self, "last_approach_log", None):
+            print(message)
+            self.last_approach_log = message
+
+    def rotate_towards_target(self, now, pose, track):
+        """사과 방향을 볼 때까지 제자리 회전한 뒤 새 시도로 재계획합니다."""
+        bearing, _ = detection.relative_to(pose, track["xy"])
+        if abs(bearing) <= config.APPROACH_FACING_TOLERANCE:
+            self.controller.stop()
+            self.approach_rotating = False
+            self.approach_attempt_start = now
+            self.next_approach_plan_time = now
+            self.approach_log(f"[approach] facing #{track['id']}: replan")
+            return
+        self.controller.set_velocity(0.0, math.copysign(config.NAV_ROTATE_SPEED, bearing))
+
+    def follow_approach_plan(self, now, pose, track):
+        """do_return_home과 같은 순서: 정지 1 step -> inflate -> A* -> 경로 추종."""
+        if self.replan_requested:
+            self.approach_path_ready = False
+            self.approach_plan_pending = False
+            self.next_approach_plan_time = now + config.NAV_REPLAN_PERIOD
+            self.replan_requested = False
+        if not self.approach_path_ready:
+            self.controller.stop()
+            if self.grid is None or now < self.next_approach_plan_time:
+                return
+            if not self.approach_plan_pending:
+                self.approach_plan_pending = True
+                return
+            self.approach_plan_pending = False
+            # 사과는 LiDAR 평면 아래라 지도에 없습니다. 사과 앞 standoff 지점을 목표로 합니다.
+            goal_xy = detection.standoff_point(
+                pose, track["xy"], config.TARGET_ARRIVAL_DISTANCE * 0.8)
+            radius = (config.ROBOT_RADIUS + config.SAFETY_MARGIN) / self.grid.resolution
+            costmap = planning.inflate_obstacles(self.grid.grid, int(math.ceil(radius)))
+            start = self.grid.world_to_grid(pose[0], pose[1])
+            goal = self.grid.world_to_grid(goal_xy[0], goal_xy[1])
+            path = planning.astar(self.grid.grid, start, goal, costmap)
+            if not path:
+                self.navigation.set_path([])
+                self.navigation_status = "NO_PATH"
+                self.next_approach_plan_time = now + config.NAV_REPLAN_PERIOD
+                self.approach_log(f"[approach] no path to #{track['id']}: retry")
+                return
+            self.approach_goal = goal_xy
+            self.approach_path_ready = True
+            self.set_navigation_grid_path(path)
+            self.approach_log(f"[approach] path to #{track['id']}: {len(path)} cells")
+        status = self.follow_navigation(now, pose)
+        if status == "REACHED" and self.approach_goal is not None:
+            # 셀 중심 도착 후 실제 standoff 지점으로 마무리합니다.
+            self.set_navigation_path([self.approach_goal])
+            self.approach_goal = None
 
     def do_return_home(self, now, pose):
         if config.BASELINE_MODE == "STOP":

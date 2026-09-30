@@ -250,6 +250,27 @@ class TestTargetTracker(unittest.TestCase):
         self.assertTrue(t.all_visited())
         self.assertIsNone(t.nearest_unvisited((0, 0, 0)))
 
+    def test_skip_excludes_target_but_not_visited(self):
+        t = self.tracker()
+        for k in range(5):
+            t.update(k * 0.128, (0, 0, 0), [blob(1.0, 0.5), blob(2.0, -0.5)])
+        near = t.nearest_unvisited((0, 0, 0))
+        t.skip(near["id"])
+        self.assertNotEqual(t.nearest_unvisited((0, 0, 0))["id"], near["id"])
+        self.assertEqual(len(t.unvisited()), 1)
+        self.assertEqual(t.visited_count(), 0)
+        self.assertFalse(t.all_visited())
+
+    def test_standoff_point(self):
+        x, y = detection.standoff_point((0.0, 0.0, 1.0), (2.0, 0.0), 0.24)
+        self.assertAlmostEqual(x, 1.76)
+        self.assertAlmostEqual(y, 0.0)
+        x, y = detection.standoff_point((1.0, 1.0, 0.0), (1.0, 3.0), 0.5)
+        self.assertAlmostEqual(math.hypot(x - 1.0, y - 3.0), 0.5)
+        self.assertAlmostEqual(x, 1.0)
+        self.assertLess(y, 3.0)
+        self.assertEqual(detection.standoff_point((1.9, 0.0, 0.0), (2.0, 0.0), 0.24), (1.9, 0.0))
+
     def test_visited_target_seen_again_is_not_new(self):
         t = self.tracker()
         for k in range(3):
