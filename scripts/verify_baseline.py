@@ -49,6 +49,7 @@ TEST_GROUPS = [
     ("Control/Odometry", "test_control_localization"),
     ("TurtleBot3 profile", "test_turtlebot"),
     ("Scan insertion", "test_scan_insertion"),
+    ("Log-odds mapping", "test_logodds"),
     ("Safety monitor", "test_safety"),
     ("Scheduling", "test_scheduling"),
     ("Rescue worlds", "test_rescue_worlds"),

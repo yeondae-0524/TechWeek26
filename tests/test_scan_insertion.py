@@ -51,10 +51,11 @@ class TestScanInsertion(unittest.TestCase):
         self.assertEqual(self.cell(1.0 + self.ox), OCCUPIED)
 
     def test_old_obstacle_cleared_by_later_free_ray(self):
-        # A person stood at 0.5 m, then left: no permanent ghost (M0 rule).
+        # A person stood at 0.5 m, then left: repeated free rays clear the ghost.
         self.g.insert_scan((0.0, 0.0, 0.0), single_ray(0.5), FOV, 3.5)
         self.assertEqual(self.cell(0.5 + self.ox), OCCUPIED)
-        self.g.insert_scan((0.0, 0.0, 0.0), single_ray(1.5), FOV, 3.5)
+        for _ in range(3):
+            self.g.insert_scan((0.0, 0.0, 0.0), single_ray(1.5), FOV, 3.5)
         self.assertEqual(self.cell(0.5 + self.ox), FREE)
         self.assertEqual(self.cell(1.5 + self.ox), OCCUPIED)
 
