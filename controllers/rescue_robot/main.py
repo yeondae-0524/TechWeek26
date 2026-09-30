@@ -295,6 +295,9 @@ class RescueMission:
             if dump:
                 self.grid.save_pgm(dump)
         parts.append(f"target_found={self.target['found']}")
+        if self.target["found"]:
+            parts.append(f"target cx={self.target['cx']} dir={self.target['direction']} "
+                         f"area={self.target['area']:.0f}")
         if self.safety_event or self.sensor_fault:
             parts.append(f"safety={self.sensor_fault or self.safety_event}")
         print("[status] " + " | ".join(parts))
