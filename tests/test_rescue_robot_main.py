@@ -189,6 +189,72 @@ assert mission.state == main.EXPLORE
 assert mission.controller.command == (0,0)
 ''')
 
+    def test_escape_turns_to_open_side_then_drives_and_replans(self):
+        self.run_case('''robot, mission = make("MISSION")
+ranges = [0.3]*360
+for i in range(60, 121): ranges[i] = 2.0   # 왼쪽만 트여 있음
+mission.scan = main.navigation_control.Scan(tuple(ranges), 0.0)
+mission.transition(main.EXPLORE, 0)
+mission.begin_escape(1.0)
+assert mission.escape is not None
+assert mission.step_escape(1.0, (0.0, 0.0, 0.0))
+v, w = mission.controller.command
+assert v == 0 and w > 0                      # 먼저 왼쪽으로 제자리 회전
+assert mission.step_escape(2.0, (0.0, 0.0, math.pi/2))
+v, w = mission.controller.command
+assert v == config.ESCAPE_SPEED and w == 0   # 방향을 맞춘 뒤 천천히 전진
+assert mission.step_escape(4.0, (0.0, config.ESCAPE_DISTANCE, math.pi/2))
+assert mission.escape is None                # 끝나면 즉시 재계획
+assert mission.controller.command == (0,0)
+assert mission.recovery.ready_at == 4.0
+assert not mission.step_escape(4.1, (0.0, config.ESCAPE_DISTANCE, math.pi/2))
+''')
+
+    def test_escape_stops_after_repeated_failures(self):
+        self.run_case('''robot, mission = make("MISSION")
+ranges = [0.3]*360
+for i in range(60, 121): ranges[i] = 2.0
+mission.scan = main.navigation_control.Scan(tuple(ranges), 0.0)
+now = 0.0
+for _ in range(config.ESCAPE_MAX_FAILURES):
+    mission.begin_escape(now)
+    assert mission.escape is not None
+    mission.step_escape(now, (0.0, 0.0, 0.0))
+    now += config.ESCAPE_TIMEOUT + 0.1
+    mission.step_escape(now, (0.0, 0.0, 0.0))   # 움직이지 못하고 시간 초과
+assert mission.escape_failures == config.ESCAPE_MAX_FAILURES
+mission.begin_escape(now)
+assert mission.escape is None                    # 더 이상 탈출하지 않고 recovery에 맡깁니다
+''')
+
+    def test_escape_times_out(self):
+        self.run_case('''robot, mission = make("MISSION")
+ranges = [0.3]*360
+for i in range(60, 121): ranges[i] = 2.0
+mission.scan = main.navigation_control.Scan(tuple(ranges), 0.0)
+mission.begin_escape(0.0)
+mission.step_escape(0.0, (0.0, 0.0, 0.0))
+mission.step_escape(config.ESCAPE_TIMEOUT + 0.1, (0.0, 0.0, 0.0))
+assert mission.escape is None and mission.controller.command == (0,0)
+''')
+
+    def test_explore_starts_escape_only_when_trapped(self):
+        self.run_case('''robot, mission = make("MISSION")
+F, O = main.mapping.FREE, main.mapping.OCCUPIED
+ranges = [0.3]*360
+for i in range(60, 121): ranges[i] = 2.0
+mission.scan = main.navigation_control.Scan(tuple(ranges), 0.0)
+grid = [[F]*40 for _ in range(40)]                 # frontier 없음
+mission.grid.grid = grid
+start = mission.grid.world_to_grid(0.0, 0.0)
+mission.transition(main.EXPLORE, 0)
+mission.do_explore(0.0, (0.0, 0.0, 0.0))
+assert mission.escape is None                      # 갇히지 않았으면 탈출하지 않습니다
+grid[start[0]][start[1]+2] = O                     # 바로 옆 장애물: 팽창 영역 안
+mission.do_explore(5.0, (0.0, 0.0, 0.0))
+assert mission.escape is not None
+''')
+
     def test_approach_target_stop_mode_never_moves(self):
         self.run_case('''robot, mission = make("STOP")
 mission.tracker.tracks.append({"id": 3, "xy": (2.0, 0.0), "confirmed": True, "visited": False,

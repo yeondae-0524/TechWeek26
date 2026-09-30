@@ -129,6 +129,61 @@ class PathFollower:
         v, w = limit_twist(v, w, c)
         return v, w, 'RUNNING'
 
+def arc_offset(v, w, t):
+    """(v, w)로 t초 이동한 뒤 로봇 frame 위치 (x, y)."""
+    if abs(w) < 1e-9:
+        return v*t, 0.0
+    return v*sin(w*t)/w, v*(1-cos(w*t))/w
+
+def escape_heading(scan, config=DEFAULT):
+    """가장 트인 방향(로봇 frame bearing, rad)을 반환합니다. 관측이 없으면 None.
+
+    config.escape_half_angle 부채꼴마다 관측된 점까지의 최소 거리를 보고, 관측이 없는
+    광선(inf)은 최대 거리로 봅니다. 부채꼴 안에 관측 광선이 하나도 없으면 후보에서 뺍니다
+    (UNKNOWN_SPACE와 같은 규칙). 후진은 하지 않으므로 방향만 고릅니다.
+    가까운 점(안전 반경 + escape_near_margin 안)에 다가가는 방향도 뺍니다.
+    """
+    c = config
+    if scan is None or len(scan.ranges) != c.lidar_count:
+        return None
+    rays = []
+    for i, d in enumerate(scan.ranges):
+        angle = wrap_angle(c.lidar_first_angle+c.lidar_direction*i*c.lidar_fov/c.lidar_count)
+        observed = isfinite(d) and c.lidar_min <= d <= c.lidar_max
+        rays.append((angle, d if observed else c.lidar_max, observed))
+    # 가까운 점이 모두 뒤쪽(90° 이상)에 오는 방향만 후보입니다. 그래야 직진할수록 멀어집니다.
+    near = [atan2(py, px) for px, py in scan.points(c)
+            if hypot(px, py) <= c.robot_radius+c.safety_margin+c.escape_near_margin]
+    scores = []
+    for center, _, _ in rays:
+        sector = [(d, seen) for a, d, seen in rays
+                  if abs(wrap_angle(a-center)) <= c.escape_half_angle]
+        away = all(abs(wrap_angle(center-b)) >= pi/2 for b in near)
+        scores.append(min(d for d, _ in sector)
+                      if away and any(seen for _, seen in sector) else None)
+    valid = [score for score in scores if score is not None]
+    if not valid:
+        return None
+    # 최고 점수 방향이 여러 개면 가장 긴 연속 구간의 가운데를 고릅니다(원형 index).
+    best = max(valid)
+    top = [score is not None and score >= best-1e-9 for score in scores]
+    n = len(top)
+    if all(top):
+        return rays[0][0]
+    start = next(i for i in range(n) if not top[i])
+    run_start = run_length = best_start = best_length = 0
+    for k in range(1, n+1):
+        i = (start+k) % n
+        if top[i]:
+            if run_length == 0:
+                run_start = i
+            run_length += 1
+            if run_length > best_length:
+                best_start, best_length = run_start, run_length
+        else:
+            run_length = 0
+    return rays[(best_start+(best_length-1)//2) % n][0]
+
 class SafetyMonitor:
     def __init__(self, config=DEFAULT):
         self.config = config
@@ -143,30 +198,44 @@ class SafetyMonitor:
             return 0.0, 0.0, 'INVALID_SCAN'
         points = scan.points(c)
         radius = c.robot_radius+c.safety_margin
-        if any(hypot(px, py) <= radius for px, py in points):
+        inside = [(px, py) for px, py in points if hypot(px, py) <= radius]
+        if inside and v == 0 and w == 0:
             return 0.0, 0.0, 'STOP'
         if v == 0 and w == 0:
             return v, w, 'CLEAR'
         v, w = limit_twist(v, w, c)
+        # 안전 반경 안에 점이 있으면 그 점에서 멀어지는 명령(제자리 회전, 반대쪽 이동)만 허용해
+        # 장애물 옆에 멈춘 로봇이 빠져나올 수 있게 합니다. 가까워지는 명령은 STOP입니다.
+        if inside:
+            # 로봇이 완전한 원형이 아니므로 아주 가까운 점이 있으면 회전도 막습니다.
+            if abs(v) < 1e-9 and any(hypot(px, py) < c.spin_clearance for px, py in inside):
+                return 0.0, 0.0, 'STOP'
+            cx, cy = arc_offset(v, w, c.prediction_step)
+            if any(hypot(px-cx, py-cy) < hypot(px, py)-1e-9 for px, py in inside):
+                return 0.0, 0.0, 'STOP'
         spin = abs(v) < 1e-9
-        # 진행 방향의 미관측 구역은 이동을 차단합니다. inf를 빈 공간으로 바꾸지 않습니다.
+        # 진행 방향 광선이 전부 미관측이면 이동을 차단합니다. 넓은 공간에서는 일부 광선이
+        # inf(최대 거리 밖)인 것이 정상이므로, 한 광선이라도 관측되면 궤적 검사로 넘깁니다.
+        # 궤적 검사는 관측된 점만 사용합니다(inf를 점으로 바꾸지 않습니다).
         bearing = 0.0 if v >= 0 else pi
+        relevant_count = observed = 0
         for i, d in enumerate(scan.ranges):
             angle = c.lidar_first_angle+c.lidar_direction*i*c.lidar_fov/c.lidar_count
             # 예측 구간에서 달라지는 진행 방향까지 관측 범위에 포함합니다.
-            relevant = spin or abs(wrap_angle(angle-bearing)) <= c.observation_half_angle+abs(w)*c.prediction_time
-            if relevant and (not isfinite(d) or not c.lidar_min <= d <= c.lidar_max):
-                return 0.0, 0.0, 'UNKNOWN_SPACE'
+            if spin or abs(wrap_angle(angle-bearing)) <= c.observation_half_angle+abs(w)*c.prediction_time:
+                relevant_count += 1
+                observed += isfinite(d) and c.lidar_min <= d <= c.lidar_max
+        if relevant_count and not observed:
+            return 0.0, 0.0, 'UNKNOWN_SPACE'
         # 현재 스캔의 장애물 점으로 이동 궤적을 검사하고 샘플 간격만큼 여유를 둡니다.
         padding = abs(v)*c.prediction_step/2
         count = ceil(c.prediction_time/c.prediction_step)
         for step in range(1, count+1):
             t = step*c.prediction_time/count
-            if abs(w) < 1e-9:
-                cx, cy = v*t, 0.0
-            else:
-                cx, cy = v*sin(w*t)/w, v*(1-cos(w*t))/w
-            if any(hypot(px-cx, py-cy) <= radius+padding for px, py in points):
+            cx, cy = arc_offset(v, w, t)
+            # 이미 가까운 점에서 멀어지는 이동은 충돌로 보지 않습니다(가까워질 때만 충돌).
+            if any(hypot(px-cx, py-cy) <= radius+padding and hypot(px-cx, py-cy) < hypot(px, py)
+                   for px, py in points):
                 return 0.0, 0.0, 'PREDICTED_COLLISION'
         near = sum(hypot(px, py) < c.robot_radius+c.slow_margin and
                    (spin or (px >= 0 if v > 0 else px <= 0)) for px, py in points)

@@ -104,6 +104,75 @@ class PlanningContractTests(unittest.TestCase):
         self.assertEqual(planning.astar(grid, (2, 2), (2, 2), costmap=costmap), [])
 
 
+class FrontierPlanningTests(unittest.TestCase):
+    def test_skips_frontier_blocked_by_inflation(self):
+        # 오른쪽 위 frontier는 벽 옆이라 팽창 지도에서 막힙니다. 막힌 칸 대신 도달 가능한 칸을 고릅니다.
+        grid = [[FREE] * 8 for _ in range(8)]
+        for row in range(8):
+            grid[row][7] = UNKNOWN
+        grid[0][6] = OCCUPIED
+        inflated = planning.inflate_obstacles(grid, 1)
+        frontier, path = planning.plan_to_frontier(grid, inflated, (6, 1), (0.075, 0.325, 0.0),
+                                                   resolution=0.05)
+        self.assertIsNotNone(frontier)
+        self.assertEqual(inflated[frontier[0]][frontier[1]], FREE)
+        self.assertEqual((path[0], path[-1]), ((6, 1), frontier))
+
+    def test_start_inside_inflation_is_released(self):
+        grid = [[FREE] * 6 for _ in range(6)]
+        for row in range(6):
+            grid[row][5] = UNKNOWN
+        grid[2][0] = OCCUPIED
+        inflated = planning.inflate_obstacles(grid, 1)
+        self.assertEqual(inflated[2][1], OCCUPIED)
+        frontier, path = planning.plan_to_frontier(grid, inflated, (2, 1), (0.075, 0.125, 0.0),
+                                                   resolution=0.05)
+        self.assertTrue(path)
+        self.assertEqual(path[0], (2, 1))
+        self.assertEqual(inflated[2][1], OCCUPIED)  # 입력은 바꾸지 않습니다
+
+    def test_unknown_ring_around_robot_is_cleared(self):
+        # LiDAR 최소 거리 때문에 로봇 주변이 UNKNOWN이어도 출발할 수 있어야 합니다.
+        grid = [[FREE] * 12 for _ in range(12)]
+        for row in range(12):
+            grid[row][11] = UNKNOWN
+        for row in range(3, 8):
+            for col in range(3, 8):
+                grid[row][col] = UNKNOWN
+        grid[5][3] = OCCUPIED
+        inflated = planning.inflate_obstacles(grid, 0)
+        self.assertEqual(planning.plan_to_frontier(grid, inflated, (5, 5), (0.275, 0.275, 0.0),
+                                                   resolution=0.05), (None, []))
+        frontier, path = planning.plan_to_frontier(grid, inflated, (5, 5), (0.275, 0.275, 0.0),
+                                                   resolution=0.05, footprint_cells=2.2)
+        self.assertTrue(path)
+        cleared = planning.clear_footprint(inflated, grid, (5, 5), 2.2)
+        self.assertEqual(cleared[5][3], OCCUPIED)  # 실제 장애물은 풀지 않습니다
+        self.assertEqual(cleared[5][7], FREE)
+        self.assertEqual(inflated[5][7], UNKNOWN)  # 입력은 바꾸지 않습니다
+
+    def test_prefers_reachable_frontier_over_higher_scored_island(self):
+        # 오른쪽 FREE 섬은 UNKNOWN에 둘러싸여 점수가 높지만 갈 수 없습니다.
+        grid = [[UNKNOWN] * 20 for _ in range(10)]
+        for row in range(10):
+            for col in range(4):
+                grid[row][col] = FREE
+        grid[5][15] = FREE
+        inflated = planning.inflate_obstacles(grid, 0)
+        self.assertEqual(planning.select_frontier(grid, (0.175, 0.275, 0.0), 0.05), (5, 15))
+        frontier, path = planning.plan_to_frontier(grid, inflated, (5, 1), (0.075, 0.275, 0.0),
+                                                   resolution=0.05, max_tries=1)
+        self.assertEqual(frontier[1], 3)
+        self.assertEqual(path[-1], frontier)
+        self.assertIn(frontier, planning.reachable_cells(inflated, (5, 1)))
+
+    def test_no_reachable_frontier(self):
+        grid = [[FREE, OCCUPIED, FREE, UNKNOWN]]
+        inflated = planning.inflate_obstacles(grid, 0)
+        self.assertEqual(planning.plan_to_frontier(grid, inflated, (0, 0), (0.0, 0.0, 0.0),
+                                                   resolution=0.05), (None, []))
+
+
 class LocalPlannerContractTests(unittest.TestCase):
     def test_2d_costmap_uses_same_origin_and_cell_centres(self):
         origin, resolution = (-2.0, 4.0), 0.1

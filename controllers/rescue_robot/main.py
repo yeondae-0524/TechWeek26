@@ -101,6 +101,8 @@ class RescueMission:
         self.home_path = None
         self.home_plan_pending = False
         self.next_home_plan_time = 0.0
+        self.escape = None  # 탈출 동작 상태 (None이면 비활성)
+        self.escape_failures = 0  # 연속으로 움직이지 못한 탈출 횟수
         self.test_index = -1
         self.safety_event = None
         self.sensor_fault = None
@@ -294,6 +296,9 @@ class RescueMission:
             self.scan_frontier_view(now, pose)
             return
 
+        if self.step_escape(now, pose):
+            return
+
         if self.navigation.follower.path:
             status = self.follow_navigation(now, pose)
             if status == "REPLAN_REQUIRED":
@@ -306,14 +311,17 @@ class RescueMission:
                 self.recovery.stage = "OBSERVE"
                 print("[coverage] frontier observation started")
             return
-
-        self.controller.stop()
         if self.grid is None:
             return
         if now < self.recovery.ready_at:
             return
 
         safe_grid, start = self.exploration_grid(pose)
+        if self.is_trapped(safe_grid, start):
+            # 안전 여유 안(장애물에 너무 가까움)이면 계획이 불가능하므로 먼저 빠져나옵니다.
+            self.begin_escape(now)
+            if self.escape is not None:
+                return
         if self.explore_goal is None:
             reachable = reachable_cells(safe_grid, start)
             candidates = [cell for cell in planning.find_frontiers(self.grid.grid)
@@ -343,6 +351,7 @@ class RescueMission:
             print(f"[explore] frontier={frontier}, path={len(path)}")
             self.set_navigation_grid_path(path)
             self.recovery.planned()
+            self.escape_failures = 0
         else:
             self.fail_exploration(now)
 
@@ -388,6 +397,70 @@ class RescueMission:
             return
         self.controller.set_velocity(0.0, config.NAV_ROTATE_SPEED)
 
+    # ---------------------------------------------------------- escape (recovery)
+    def is_trapped(self, inflated, start):
+        """출발 칸이 팽창 영역 안(장애물에 너무 가까움)이면 True."""
+        return (planning.inside(inflated, *start)
+                and inflated[start[0]][start[1]] != mapping.FREE
+                and self.grid.grid[start[0]][start[1]] != mapping.OCCUPIED)
+
+    def start_escape_if_trapped(self, now, inflated, start):
+        if self.is_trapped(inflated, start):
+            self.begin_escape(now)
+
+    def begin_escape(self, now):
+        """가장 트인 방향으로 돌아 ESCAPE_DISTANCE만큼 천천히 전진합니다(후진 없음)."""
+        if self.escape_failures >= config.ESCAPE_MAX_FAILURES:
+            if self.escape_failures == config.ESCAPE_MAX_FAILURES:
+                print("[escape] repeated failures: leave it to recovery")
+                self.escape_failures += 1
+            return
+        bearing = navigation_control.escape_heading(self.scan, self.navigation.config)
+        if bearing is None:
+            print("[escape] no observed open direction: stay stopped")
+            return
+        self.navigation.set_path([])
+        self.escape = {"start": now, "bearing": bearing, "heading": None, "origin": None}
+        print(f"[escape] start: turn {math.degrees(bearing):+.0f} deg, then forward "
+              f"{config.ESCAPE_DISTANCE:.2f} m")
+
+
+    def step_escape(self, now, pose):
+        """탈출 중이면 명령을 내고 True. 끝나면 즉시 재계획하도록 계획 시각을 당깁니다."""
+        escape = self.escape
+        if escape is None:
+            return False
+        if escape["heading"] is None:  # 시작 pose 기준 world 방향으로 고정합니다.
+            escape["heading"] = pose[2] + escape["bearing"]
+        done = None
+        if now - escape["start"] > config.ESCAPE_TIMEOUT:
+            done = "timeout"
+            self.escape_failures += 1
+        elif escape["origin"] is None:
+            error = math.atan2(math.sin(escape["heading"] - pose[2]),
+                               math.cos(escape["heading"] - pose[2]))
+            if abs(error) <= config.ESCAPE_HEADING_TOLERANCE:
+                escape["origin"] = (pose[0], pose[1])
+            else:
+                self.controller.set_velocity(0.0, math.copysign(config.NAV_ROTATE_SPEED, error))
+                return True
+        if done is None:
+            moved = math.hypot(pose[0] - escape["origin"][0], pose[1] - escape["origin"][1])
+            if moved >= config.ESCAPE_DISTANCE:
+                done = f"moved {moved:.2f} m"
+                self.escape_failures = 0
+            else:
+                self.controller.set_velocity(config.ESCAPE_SPEED, 0.0)
+                return True
+        self.controller.stop()
+        self.escape = None
+        self.replan_requested = False
+        self.next_home_plan_time = now
+        self.next_approach_plan_time = now
+        self.recovery.ready_at = now
+        print(f"[escape] done ({done}): replan")
+        return True
+
     def do_approach_target(self, now, pose):
         """확정된 target 앞 standoff 지점까지 계획·추종하고 도착하면 방문 처리합니다."""
         if config.BASELINE_MODE == "STOP":
@@ -408,6 +481,8 @@ class RescueMission:
             self.tracker.mark_visited(track["id"])
             self.approach_log(f"[approach] visited #{track['id']}")
             self.transition(EXPLORE, now, f"target #{track['id']} visited")
+            return
+        if self.step_escape(now, pose):
             return
         if self.approach_rotating:
             self.rotate_towards_target(now, pose, track)
@@ -478,21 +553,21 @@ class RescueMission:
             goal_xy = detection.standoff_point(
                 pose, track["xy"], config.TARGET_ARRIVAL_DISTANCE * 0.8)
             radius = (config.ROBOT_RADIUS + config.SAFETY_MARGIN) / self.grid.resolution
-            costmap = planning.inflate_obstacles(self.grid.grid, int(math.ceil(radius)))
+            inflated = planning.inflate_obstacles(self.grid.grid, radius)
             start = self.grid.world_to_grid(pose[0], pose[1])
             goal = self.grid.world_to_grid(goal_xy[0], goal_xy[1])
-            path = planning.astar(
-                self.grid.grid,
-                start,
-                goal,
-                costmap,
-                connectivity=8,
-            )
+            trapped = self.is_trapped(inflated, start)
+            # 로봇 주변은 LiDAR 최소 거리 때문에 UNKNOWN으로 남아 출발 칸을 풀어 줍니다.
+            inflated = planning.clear_footprint(
+                inflated, self.grid.grid, start, config.ROBOT_RADIUS / self.grid.resolution)
+            path = planning.astar(inflated, start, goal, allow_unknown=False)
             if not path:
                 self.navigation.set_path([])
                 self.navigation_status = "NO_PATH"
                 self.next_approach_plan_time = now + config.NAV_REPLAN_PERIOD
                 self.approach_log(f"[approach] no path to #{track['id']}: retry")
+                if trapped:
+                    self.begin_escape(now)
                 return
             self.approach_goal = goal_xy
             self.approach_path_ready = True
@@ -513,6 +588,8 @@ class RescueMission:
             self.controller.stop()
             self.transition(DONE, now, f"시작점 복귀 ({distance:.2f} m)")
             return
+        if self.step_escape(now, pose):
+            return
         if self.replan_requested:
             self.home_path = None
             self.home_plan_pending = False
@@ -527,25 +604,24 @@ class RescueMission:
                 self.home_plan_pending = True
                 return
             radius = (config.ROBOT_RADIUS+config.SAFETY_MARGIN)/self.grid.resolution
-            # planning API (PR #15): inflate_obstacles -> cost map (0-254), whole-cell radius;
-            # astar(grid, start, goal, costmap) blocks OCCUPIED cells, UNKNOWN is passable.
-            costmap = planning.inflate_obstacles(self.grid.grid, int(math.ceil(radius)))
+            # inflate_obstacles returns an inflated {-1, 0, 1} grid; plan on known FREE cells only.
+            inflated = planning.inflate_obstacles(self.grid.grid, radius)
             start = self.grid.world_to_grid(pose[0], pose[1])
             goal = self.grid.world_to_grid(self.home_pose[0], self.home_pose[1])
-            path = planning.astar(
-                self.grid.grid,
-                start,
-                goal,
-                costmap,
-                connectivity=8,
-            )
-            mode = "costmap"
+            trapped = self.is_trapped(inflated, start)
+            # 로봇 주변은 LiDAR 최소 거리 때문에 UNKNOWN으로 남아 출발 칸을 풀어 줍니다.
+            inflated = planning.clear_footprint(
+                inflated, self.grid.grid, start, config.ROBOT_RADIUS / self.grid.resolution)
+            path = planning.astar(inflated, start, goal, allow_unknown=False)
+            mode = "inflated"
             self.home_plan_pending = False
             print(f"[plan] 복귀 경로 ({mode}): {len(path)} cells")
             if not path:
                 self.navigation.set_path([])
                 self.navigation_status = "NO_PATH"
                 self.next_home_plan_time = now + config.NAV_REPLAN_PERIOD
+                if trapped:
+                    self.begin_escape(now)
                 return
             self.home_path = path
             self.set_navigation_grid_path(path)
