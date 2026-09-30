@@ -1,158 +1,454 @@
-"""Global planning baseline on the occupancy grid (Webots-independent).
-
-Implemented:
-    * astar(grid, start, goal) -> [(row, col), ...]  4-neighbour, unit cost
-    * inflate_obstacles(grid, radius_cells) for safety clearance
-    * find_frontiers(grid) and cluster_frontiers(frontiers)
-
-NOT implemented (TODO, feat/planning):
-    * frontier selection strategy (distance / information gain)
-    * 8-neighbour moves, path smoothing, cost maps
-    * replanning policy when the map changes
-"""
-
+import math
 import heapq
 from collections import deque
 
-from interfaces import FREE, OCCUPIED, UNKNOWN
 
-NEIGHBORS_4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
-NEIGHBORS_8 = NEIGHBORS_4 + ((-1, -1), (-1, 1), (1, -1), (1, 1))
+# =========================
+# Common Interface
+# =========================
 
-
-def _in_bounds(grid, row, col):
-    return 0 <= row < len(grid) and 0 <= col < len(grid[0])
-
-
-def manhattan(a, b):
-    """A* heuristic.
-
-    With 4-neighbour moves and a cost of 1 per move, the true shortest path
-    can never be shorter than |d_row| + |d_col|, so Manhattan distance is
-    admissible (never overestimates) and consistent -> A* returns an optimal
-    path.
-    """
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+UNKNOWN = -1
+FREE = 0
+OCCUPIED = 1
 
 
-def astar(grid, start, goal, allow_unknown=True):
-    """Shortest 4-connected path from start to goal.
+# =========================
+# Utility
+# =========================
 
-    grid[row][col] uses UNKNOWN/FREE/OCCUPIED. OCCUPIED cells and cells outside
-    the grid are never entered. UNKNOWN cells are traversable unless
-    allow_unknown=False (optimistic planning while exploring).
+NEIGHBORS = [
+    (-1,0,1.0),
+    (1,0,1.0),
+    (0,-1,1.0),
+    (0,1,1.0),
 
-    Returns [start, ..., goal], [start] if start == goal, [] if no path or if
-    start/goal is out of bounds or blocked.
-    """
-    start, goal = tuple(start), tuple(goal)
-    if not grid or not grid[0]:
-        return []
-
-    def passable(cell):
-        if not _in_bounds(grid, *cell):
-            return False
-        value = grid[cell[0]][cell[1]]
-        return value != OCCUPIED and (allow_unknown or value != UNKNOWN)
-
-    if not passable(start) or not passable(goal):
-        return []
-    if start == goal:
-        return [start]
-
-    counter = 0  # tie-breaker so heapq never compares cells
-    open_heap = [(manhattan(start, goal), counter, start)]
-    g_cost = {start: 0}
-    parent = {start: None}
-    closed = set()
-
-    while open_heap:
-        _, _, current = heapq.heappop(open_heap)
-        if current in closed:
-            continue
-        if current == goal:
-            path = []
-            while current is not None:
-                path.append(current)
-                current = parent[current]
-            return path[::-1]
-        closed.add(current)
-        for dr, dc in NEIGHBORS_4:
-            nxt = (current[0] + dr, current[1] + dc)
-            if nxt in closed or not passable(nxt):
-                continue
-            new_g = g_cost[current] + 1
-            if new_g < g_cost.get(nxt, float("inf")):
-                g_cost[nxt] = new_g
-                parent[nxt] = current
-                counter += 1
-                heapq.heappush(open_heap, (new_g + manhattan(nxt, goal), counter, nxt))
-    return []
+    (-1,-1,1.414),
+    (-1,1,1.414),
+    (1,-1,1.414),
+    (1,1,1.414)
+]
 
 
-def inflate_obstacles(grid, radius_cells):
-    """Copy of grid where every cell within radius_cells (Euclidean) of an
-    OCCUPIED cell is also OCCUPIED. Use radius = (ROBOT_RADIUS + SAFETY_MARGIN) / resolution.
-    """
-    rows, cols = len(grid), len(grid[0])
-    out = [list(r) for r in grid]
-    rad = int(radius_cells)
-    offsets = [(dr, dc) for dr in range(-rad, rad + 1) for dc in range(-rad, rad + 1)
-               if dr * dr + dc * dc <= radius_cells * radius_cells]
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r][c] == OCCUPIED:
-                for dr, dc in offsets:
-                    rr, cc = r + dr, c + dc
-                    if 0 <= rr < rows and 0 <= cc < cols:
-                        out[rr][cc] = OCCUPIED
-    return out
+def inside(grid,r,c):
 
+    return (
+        0 <= r < len(grid)
+        and
+        0 <= c < len(grid[0])
+    )
+
+
+
+# =====================================================
+# Frontier Exploration
+# =====================================================
 
 def find_frontiers(grid):
-    """Frontier cell = FREE cell with at least one 4-neighbour that is UNKNOWN.
 
-    Returns a list of (row, col) in row-major order ([] if none).
-    """
-    frontiers = []
-    for r, row in enumerate(grid):
-        for c, value in enumerate(row):
-            if value != FREE:
+    frontiers=[]
+
+
+    for r in range(len(grid)):
+
+        for c in range(len(grid[0])):
+
+            if grid[r][c] != FREE:
                 continue
-            for dr, dc in NEIGHBORS_4:
-                rr, cc = r + dr, c + dc
-                if _in_bounds(grid, rr, cc) and grid[rr][cc] == UNKNOWN:
-                    frontiers.append((r, c))
-                    break
+
+
+            for dr,dc,_ in NEIGHBORS:
+
+                nr=r+dr
+                nc=c+dc
+
+
+                if inside(grid,nr,nc):
+
+                    if grid[nr][nc] == UNKNOWN:
+
+                        frontiers.append(
+                            (r,c)
+                        )
+
+                        break
+
+
     return frontiers
 
 
-def cluster_frontiers(frontiers, min_size=1):
-    """Group frontier cells into 8-connected clusters.
 
-    Returns a list of clusters (each a list of (row, col)), largest first.
-    Clusters smaller than min_size are dropped.
-    """
-    remaining = set(frontiers)
-    clusters = []
-    while remaining:
-        seed = remaining.pop()
-        cluster, queue = [seed], deque([seed])
-        while queue:
-            r, c = queue.popleft()
-            for dr, dc in NEIGHBORS_8:
-                n = (r + dr, c + dc)
-                if n in remaining:
-                    remaining.remove(n)
-                    cluster.append(n)
-                    queue.append(n)
-        if len(cluster) >= min_size:
-            clusters.append(sorted(cluster))
-    clusters.sort(key=len, reverse=True)
-    return clusters
+def information_gain(
+        grid,
+        frontier,
+        radius=4
+):
+
+    r,c=frontier
+
+    gain=0
 
 
-def cluster_centroid(cluster):
-    """Mean (row, col) of a cluster as floats."""
-    n = len(cluster)
-    return (sum(c[0] for c in cluster) / n, sum(c[1] for c in cluster) / n)
+    for dr in range(-radius,radius+1):
+
+        for dc in range(-radius,radius+1):
+
+            nr=r+dr
+            nc=c+dc
+
+
+            if inside(grid,nr,nc):
+
+                if grid[nr][nc]==UNKNOWN:
+                    gain+=1
+
+
+    return gain
+
+
+
+def frontier_score(
+        frontier,
+        pose,
+        grid,
+        resolution=0.05
+):
+
+    r,c=frontier
+
+
+    x,y,theta=pose
+
+
+    # grid -> meter
+    fx=c*resolution
+    fy=r*resolution
+
+
+    dx=fx-x
+    dy=fy-y
+
+
+    distance=math.sqrt(
+        dx*dx+dy*dy
+    )
+
+
+    target_angle=math.atan2(
+        dy,
+        dx
+    )
+
+
+    angle_error=abs(
+        target_angle-theta
+    )
+
+
+    angle_error=min(
+        angle_error,
+        2*math.pi-angle_error
+    )
+
+
+    gain=information_gain(
+        grid,
+        frontier
+    )
+
+
+    # 논문 방향 고려 frontier score
+    score = (
+        3.0*gain
+        -
+        2.0*distance
+        -
+        1.5*angle_error
+    )
+
+
+    return score
+
+
+
+def select_frontier(
+        grid,
+        pose,
+        resolution=0.05
+):
+
+    candidates=find_frontiers(grid)
+
+
+    if not candidates:
+        return None
+
+
+    best=None
+    best_score=-float("inf")
+
+
+    for f in candidates:
+
+        score=frontier_score(
+            f,
+            pose,
+            grid,
+            resolution
+        )
+
+
+        if score > best_score:
+
+            best_score=score
+            best=f
+
+
+    return best
+
+
+
+
+# =====================================================
+# A*
+# 8 Direction
+# Costmap Support
+# =====================================================
+
+
+def heuristic(a,b):
+
+    return math.sqrt(
+        (a[0]-b[0])**2
+        +
+        (a[1]-b[1])**2
+    )
+
+
+
+def astar(
+        grid,
+        start,
+        goal,
+        costmap=None
+):
+
+
+    pq=[]
+
+
+    heapq.heappush(
+        pq,
+        (0,start)
+    )
+
+
+    parent={
+        start:None
+    }
+
+
+    g_cost={
+        start:0
+    }
+
+
+
+    while pq:
+
+
+        _,current=heapq.heappop(pq)
+
+
+        if current==goal:
+
+
+            path=[]
+
+
+            while current:
+
+                path.append(current)
+                current=parent[current]
+
+
+            return path[::-1]
+
+
+
+        r,c=current
+
+
+        for dr,dc,move_cost in NEIGHBORS:
+
+
+            nr=r+dr
+            nc=c+dc
+
+
+            if not inside(grid,nr,nc):
+                continue
+
+
+
+            if grid[nr][nc]==OCCUPIED:
+                continue
+
+
+
+            # costmap 적용
+            extra=0
+
+
+            if costmap:
+
+                cost=costmap[nr][nc]
+
+
+                if cost>=254:
+                    continue
+
+
+                extra=cost/100
+
+
+
+            new_cost=(
+                g_cost[current]
+                +
+                move_cost
+                +
+                extra
+            )
+
+
+            nxt=(nr,nc)
+
+
+            if new_cost < g_cost.get(
+                nxt,
+                float("inf")
+            ):
+
+
+                g_cost[nxt]=new_cost
+
+
+                f=(
+                    new_cost
+                    +
+                    heuristic(
+                        nxt,
+                        goal
+                    )
+                )
+
+
+                heapq.heappush(
+                    pq,
+                    (f,nxt)
+                )
+
+
+                parent[nxt]=current
+
+
+
+    return []
+
+
+
+
+
+# =====================================================
+# Local Planner
+# RPP-lite
+# =====================================================
+
+
+def local_planner(
+        path,
+        pose,
+        local_costmap=None
+):
+
+    if not path:
+        return 0,0
+
+
+    x,y,theta=pose
+
+
+
+    # waypoint 선택
+    target=path[
+        min(
+            5,
+            len(path)-1
+        )
+    ]
+
+
+    row,col=target
+
+
+
+    target_x=col*0.05
+    target_y=row*0.05
+
+
+
+    dx=target_x-x
+    dy=target_y-y
+
+
+    target_angle=math.atan2(
+        dy,
+        dx
+    )
+
+
+    error=target_angle-theta
+
+
+    while error>math.pi:
+        error-=2*math.pi
+
+
+    while error<-math.pi:
+        error+=2*math.pi
+
+
+
+    # 방향 보정
+    if abs(error)>0.35:
+
+        return (
+            0.0,
+            1.5*error
+        )
+
+
+
+    speed=0.5
+
+
+
+    # local costmap 위험 감속
+    if local_costmap:
+
+
+        front_cost=max(
+            local_costmap
+        )
+
+
+        if front_cost>=200:
+
+            speed=0.0
+
+
+
+    return (
+        speed,
+        error
+    )
