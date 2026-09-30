@@ -29,6 +29,23 @@ MAP_UPDATE_PERIOD = 0.128   # s [INITIAL TUNING] one new scan into the grid
 DETECTION_PERIOD = 0.128    # s [INITIAL TUNING] camera read + detect_target()
 
 # ---------------------------------------------------------------------------
+# Detection (target appearance is announced on the day [DAY-OF])
+# ---------------------------------------------------------------------------
+# OpenCV HSV ranges (H 0-179, S 0-255, V 0-255), list of (lower, upper). A pixel
+# matching ANY range counts. Red needs two ranges because its hue wraps at 0/180.
+# Practice default: the green ball in breakroom_teleop_rescue.wbt [INITIAL TUNING].
+TARGET_HSV_RANGES = [
+    ((35, 80, 40), (85, 255, 255)),     # green
+]
+# Examples for the official practice apples (tune with real frames first):
+#   red    [((0, 120, 70), (10, 255, 255)), ((170, 120, 70), (179, 255, 255))]
+#   orange [((10, 120, 70), (25, 255, 255))]
+#   purple [((125, 80, 50), (155, 255, 255))]
+TARGET_MIN_AREA = 80.0        # px, smaller blobs are ignored [INITIAL TUNING]
+DETECTION_BLUR_KERNEL = 5     # odd, GaussianBlur kernel size (0 = off)
+DETECTION_MORPH_KERNEL = 5    # odd, opening kernel to remove speckles (0 = off)
+
+# ---------------------------------------------------------------------------
 # Occupancy grid
 # ---------------------------------------------------------------------------
 GRID_RESOLUTION = 0.05  # m / cell

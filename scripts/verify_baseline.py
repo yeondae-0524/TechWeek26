@@ -53,6 +53,7 @@ TEST_GROUPS = [
     ("Safety monitor", "test_safety"),
     ("Scheduling", "test_scheduling"),
     ("Rescue worlds", "test_rescue_worlds"),
+    ("Detection", "test_detection"),
 ]
 
 # Ground-truth style inputs the competition controller must never use
