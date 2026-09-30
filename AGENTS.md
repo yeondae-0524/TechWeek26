@@ -12,8 +12,22 @@
 ```text
 controllers/
   tb3_*/                 # 공식 예제 controller (운영진 제공, 수정하지 않음)
-  <우리 controller>/      # 새로 작성: controllers/<name>/<name>.py (Webots 규칙)
+  rescue_robot/          # 우리 controller (entry: rescue_robot.py -> main.py)
+    main.py              #   state machine + 매 step pipeline        [통합]
+    devices.py           #   Webots device 접근 전부                  [통합]
+    config.py            #   로봇 사양·속도·안전거리·주기 전부          [공용: 바꾸면 팀에 공유]
+    interfaces.py        #   공통 데이터 규격 (아래 "팀 규격")          [공용: 바꾸면 팀 합의]
+    localization.py      #   위치 추정 (encoder odometry)               [Mapping + Localization]
+    mapping.py           #   Occupancy Grid                             [Mapping + Localization]
+    detection.py         #   목표 검출 (현재 stub)                      [Detection]
+    planning.py          #   A*, inflation, frontier                    [Planning]
+    control.py           #   바퀴 명령, SafetyMonitor, 경로 추종(TODO)   [Control + Local Planning]
+    scheduling.py        #   초 단위 주기, step 시간 통계
 worlds/                  # 공식 world 7개 (운영진 허락으로 포함, 원본 그대로)
+  rescue_baseline.wbt    #   우리가 만든 2 m 검증 world (controller = rescue_robot)
+  apartment_rescue.wbt, breakroom_teleop_rescue.wbt   # 공식 world 복사본, controller = rescue_robot
+tests/                   # Webots 없이 도는 unittest
+scripts/verify_baseline.py   # 문법·구조·금지 입력 검사 + unit test (+ --webots 실행 검사)
 protos/                  # 공식 world가 쓰는 사과 PROTO
 models/YOLO/             # YOLO 가중치 자리 (비어 있음, 가중치는 commit하지 않음)
 docs/research/           # 알고리즘·공식 환경 조사 (00_RESEARCH_INDEX.md부터)
@@ -47,7 +61,7 @@ docs/research/           # 알고리즘·공식 환경 조사 (00_RESEARCH_INDEX
 | Gyro | lookupTable 없음 → rad/s 그대로 |
 | basicTimeStep | apartment·breakroom_teleop 계열 64 ms, breakroom_ball·sensor_test·empty 32 ms (기본값) |
 
-## 팀 규격 (새 코드에서 따른다. 바꾸려면 팀 합의)
+## 팀 규격 (`interfaces.py`. 바꾸려면 interfaces.py + tests + 이 문서를 같이 고치고 팀 합의)
 
 ```python
 UNKNOWN, FREE, OCCUPIED = -1, 0, 1
@@ -64,11 +78,13 @@ waypoint = (x, y)
 2. **unrelated file 수정 금지.** 작업 범위 밖 파일은 건드리지 않는다.
 3. **공식 world/controller/PROTO 원본 수정 금지.** world 변경이 필요하면 복사본을 만들고 이유를 보고한다.
 4. **새로운 dependency 추가 전 이유를 확인**(사람에게 묻기). 공식 교육 자료 기준 버전: numpy 1.23.5, opencv-python 4.8.0.74.
-5. **hard-coded robot-specific values 최소화.** device 이름, wheel geometry, 속도, 안전거리 등은 설정 파일 한 곳에 모은다.
-   Webots API 호출도 가능한 한 한 모듈에 모아, 나머지 로직은 Webots 없이 테스트할 수 있게 한다.
+5. **hard-coded robot-specific values 최소화.** device 이름, wheel geometry, 속도, 안전거리 등은 `config.py`에만 둔다.
+   Webots API 접근은 `devices.py`(와 `main.py`, `rescue_robot.py`)에만 둔다. 나머지 모듈은 Webots 없이 테스트할 수 있어야 한다
+   (`verify_baseline.py`가 검사).
 6. **stub을 실제 구현처럼 보고하지 말 것.** TODO/stub은 그대로 TODO라고 보고한다. 가짜 동작으로 테스트를 통과시키지 않는다.
 7. 확정되지 않은 사양(대회 world, target 외형, 미션 시간 등)은 추측해서 확정하지 않는다.
-8. 미완성 알고리즘이 로봇을 움직이게 하지 않는다. 기본 동작은 정지이고, 새 동작은 명시적인 모드에서만 켠다.
+8. 미완성 알고리즘이 로봇을 움직이게 하지 않는다. 기본 동작은 정지(`BASELINE_MODE = "STOP"`)이고,
+   새 동작은 `RESCUE_MODE=<모드>` 같은 명시적인 모드에서만 켠다. SafetyMonitor는 항상 마지막에 적용한다.
 9. 새 기능에는 Webots 없이 도는 unit test를 `tests/`에 추가한다.
 10. git commit/branch 조작은 사람이 요청할 때만 한다. 요청받았을 때는 아래 **Git 규칙**을 따른다.
 
@@ -89,14 +105,16 @@ waypoint = (x, y)
 | `perf` | 성능 개선 | `perf: optimize frontier distance field` |
 
 - 피할 것: `fix: fix bug`, `feat: update code`, `chore: 수정`, 목적이 섞인 `feat: add mapping and fix control and update docs`.
-- commit 전: 관련 테스트 실행 → Webots에서 동작 확인(controller/world를 바꿨다면) → `git status`, `git diff`로 의도한 파일만 바뀌었는지 확인.
+- commit 전: 관련 테스트 → `python scripts/verify_baseline.py` (controller/world 동작을 바꿨다면 `--webots`) → `git status`, `git diff`로 의도한 파일만 바뀌었는지 확인.
 - `git add .` 대신 **필요한 파일만** `git add <file>`.
 - 테스트가 깨진 상태, 임시 디버깅 코드, 로그, 생성 파일, 개인 경로, 모델 가중치는 commit하지 않는다.
 
 ## 코드 수정 후
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"   # tests/가 생긴 뒤부터
+python scripts/verify_baseline.py                                         # 항상
+python scripts/verify_baseline.py --webots                                # controller/world를 바꿨다면 (rescue_baseline.wbt)
+python scripts/verify_baseline.py --webots --world worlds/apartment_rescue.wbt   # 공식 world에서
 ```
 
-Webots에서 실행해 본 결과(에러 여부, 로봇 동작)와 테스트 결과(PASS/FAIL)를 그대로 보고한다.
+결과(PASS/FAIL)를 그대로 보고한다. `python`은 3.10이어야 한다(Windows: `py -3.10`).

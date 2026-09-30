@@ -5,8 +5,9 @@
 미션: 사전 지도 없음 · 시작 pose만 제공 · 목표물 위치 모름 → 탐색 → 구조 대상 식별 → 접근 → 시작점 복귀.
 정적 장애물·움직이는 사람과 충돌 금지.
 
-**현재 상태: 새로 시작.** 운영진 공식 baseline(world·예제 controller)만 들어 있고, 우리 controller는 아직 없다.
-이전 baseline 코드는 git 이력(PR #4 이전)에 남아 있다.
+**현재 상태:** 운영진 공식 baseline(world·예제 controller) 옆에 우리 controller `controllers/rescue_robot/`이 있다.
+센서 읽기·odometry·LiDAR 지도·A*·frontier 검출·SafetyMonitor까지 있고, 로봇은 기본적으로 **정지** 상태다.
+경로 추종, target 검출, 탐색 전략, 복귀는 각 담당이 구현한다(아래 "역할별 파일").
 
 ## 환경
 
@@ -30,6 +31,7 @@
 ```text
 TechWeek26/
 ├─ controllers/
+│   ├─ rescue_robot/          # 🆕 우리 controller (역할별 파일은 아래 표)
 │   ├─ tb3_teleop/            # 키보드 조종 (W/A/S/D)
 │   ├─ tb3_teleop_sensors/    # 조종 + 센서 값 Display (compass도 읽지만 대회에선 사용 금지)
 │   ├─ tb3_teleop_cam/        # 조종 + OpenCV 색 검출 창
@@ -43,7 +45,11 @@ TechWeek26/
 │   ├─ breakroom_teleop.wbt   # 휴게실 + 센서 Display (64 ms)
 │   ├─ breakroom_teleop_yolo.wbt, breakroom_ground_truth.wbt   (64 ms)
 │   ├─ breakroom_ball.wbt, breakroom_sensor_test.wbt           (32 ms)
-│   └─ empty.wbt
+│   ├─ empty.wbt
+│   ├─ apartment_rescue.wbt, breakroom_teleop_rescue.wbt       # 🆕 복사본, controller = rescue_robot
+│   └─ rescue_baseline.wbt    # 🆕 우리가 만든 2 m 검증 world
+├─ tests/                     # 🆕 Webots 없이 도는 unit test
+├─ scripts/verify_baseline.py # 🆕 한 번에 검증
 ├─ protos/                    # 공식 world의 사과 PROTO
 ├─ models/YOLO/               # YOLO 가중치 자리 (commit하지 않음)
 ├─ docs/research/             # 알고리즘·공식 환경 조사, 목표 architecture, 구현 로드맵
@@ -65,12 +71,37 @@ cd TechWeek26
 2. Webots에서 `worlds/breakroom_teleop.wbt` 열기 → 실행(▶) → 3D 화면 클릭 후 W/A/S/D로 로봇이 움직이는지 확인
 3. `worlds/breakroom_sensor_test.wbt` 실행 → 콘솔에 LiDAR 전/후/좌/우 값이 나오는지 확인
 
-## 우리 controller 만들기
+## 우리 controller 실행
 
-1. `controllers/<이름>/<이름>.py` 생성 (Webots는 폴더 이름과 같은 `.py`를 실행한다)
-2. 공식 world를 복사해 새 이름으로 저장 (예: Webots에서 `apartment.wbt` 열기 → File → Save World As → `apartment_rescue.wbt`)
-3. 복사본에서 `TurtleBot3Burger`의 `controller` 필드를 `<이름>`으로 변경 (원본 world는 수정하지 않는다)
-4. 로봇 시작 pose: apartment `(-0.3, -7.5, 180°)`, breakroom 계열 `(-1.265, 1.811, -24.3°)`
+| world | 설명 |
+|---|---|
+| `worlds/apartment_rescue.wbt` | 공식 apartment 복사본 (약 13 m, 움직이는 사람), 시작 (-0.3, -7.5, 180°) |
+| `worlds/breakroom_teleop_rescue.wbt` | 공식 breakroom 복사본, 시작 (-1.265, 1.811, -24.3°) |
+| `worlds/rescue_baseline.wbt` | 우리가 만든 2 m 검증 world |
+
+세 world 모두 로봇 controller가 `rescue_robot`이다. 공식 원본 world는 수정하지 않았다(controller·시작 pose 줄만 다름).
+
+1. `controllers/rescue_robot/runtime.ini`의 `COMMAND`가 본인 Python 3.10 경로인지 확인 (다르면 로컬에서만 수정, commit 금지)
+2. Webots에서 위 world 중 하나를 열고 실행 → 기본 모드 `STOP`: 로봇은 정지, 콘솔에 2초마다 `[status] ... pose / lidar_front / map` 출력
+3. 구동계 확인: 환경변수 `RESCUE_MODE=CONTROL_TEST` 또는 `config.BASELINE_MODE = "CONTROL_TEST"` → 전진/정지/좌회전/정지/우회전/정지
+
+```bash
+py -3.10 scripts/verify_baseline.py                                  # 문법·구조·unit test
+py -3.10 scripts/verify_baseline.py --webots --world worlds/apartment_rescue.wbt
+py -3.10 scripts/verify_baseline.py --webots --mode CONTROL_TEST --world worlds/apartment_rescue.wbt
+```
+
+## 역할별 파일 (`controllers/rescue_robot/`)
+
+| 담당 | 파일 | 지금 있는 것 | 할 일 |
+|---|---|---|---|
+| Mapping + Localization | `localization.py`, `mapping.py` | encoder odometry, LiDAR → 좌표 변환 → 이진 Occupancy Grid | gyro 보정, log-odds 지도, (가능하면) Scan Matching |
+| Detection | `detection.py` | `detect_target(frame)` **stub** (항상 found=False) | 목표 검출 → `found/cx/direction/area` |
+| Planning | `planning.py` | A*, 장애물 inflation, frontier 검출·clustering | frontier 선택, 목표 접근 경로, 복귀 경로 |
+| Control + Local Planning | `control.py` | 바퀴 명령, SafetyMonitor(정지 영역·LiDAR 사각·후진 금지) | `follow_waypoint` 경로 추종, 장애물 회피, recovery |
+| 통합 | `main.py`, `devices.py`, `config.py` | state machine, 센서 읽기, 설정 | 모듈 연결, 모드 추가 |
+
+각 모듈은 Webots 없이 테스트한다: `tests/test_<모듈>.py`. 데이터 형식은 `AGENTS.md`의 "팀 규격"을 따른다.
 
 ## 작업 방식
 
@@ -90,5 +121,4 @@ cd TechWeek26
 | [11_IMPLEMENTATION_ROADMAP](docs/research/11_IMPLEMENTATION_ROADMAP.md) | 단계별 구현 순서(S0–S11), 수용 기준 |
 | [12_FAILURE_SCENARIOS](docs/research/12_FAILURE_SCENARIOS.md) | 실패 상황별 대응 |
 
-research 문서는 이전 baseline의 파일 이름(`config.py`, `mapping.py` 등)을 예로 들고 있다. 새 코드의 구조는 팀이 정하고,
-알고리즘·수치 근거로만 참고한다.
+research 문서의 파일 이름(`config.py`, `mapping.py`, `control.py` 등)은 지금 `controllers/rescue_robot/`의 파일과 같다.
