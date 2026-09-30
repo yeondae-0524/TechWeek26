@@ -5,10 +5,11 @@ Usage (from the project root, with Python 3.10):
     python scripts/verify_baseline.py            # syntax + architecture + unit tests
     python scripts/verify_baseline.py --webots   # ... + launch Webots smoke test
 
-The Webots smoke test opens worlds/rescue_baseline.wbt, lets the controller
-run for a few seconds, then closes Webots. It checks that the controller
-started, reached EXPLORE, printed no traceback and that the robot did not move
-(STOP mode). Use --mode CONTROL_TEST to run the drive-train check instead.
+The Webots smoke test opens worlds/rescue_baseline.wbt (TurtleBot3 Burger),
+lets the controller run for a few seconds, then closes Webots. It checks that
+the controller started, reached EXPLORE, printed no traceback and that the
+robot did not move (STOP mode, judged from encoder odometry - GPS is not used,
+organizer rule). Use --mode CONTROL_TEST to run the drive-train check instead.
 
 Exit code 0 = everything passed.
 """
@@ -27,9 +28,13 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CONTROLLER_DIR = os.path.join(ROOT, "controllers", "rescue_robot")
 TESTS_DIR = os.path.join(ROOT, "tests")
 WORLD = os.path.join(ROOT, "worlds", "rescue_baseline.wbt")
+IS_WINDOWS = os.name == "nt"
+WEBOTS_CANDIDATES = (
+    (os.path.expandvars(r"%LOCALAPPDATA%\Programs\Webots\msys64\mingw64\bin\webots.exe"),
+     r"C:\Program Files\Webots\msys64\mingw64\bin\webots.exe")
+    if IS_WINDOWS else ("/usr/local/bin/webots", "/usr/bin/webots", "/snap/bin/webots"))
 WEBOTS_EXE = os.environ.get(
-    "WEBOTS_EXE",
-    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Webots\msys64\mingw64\bin\webots.exe"))
+    "WEBOTS_EXE", next((p for p in WEBOTS_CANDIDATES if os.path.exists(p)), WEBOTS_CANDIDATES[0]))
 
 # Only these modules may import the Webots API (keeps the rest testable).
 WEBOTS_API_ALLOWED = {"devices.py", "main.py", "rescue_robot.py"}
@@ -40,7 +45,20 @@ TEST_GROUPS = [
     ("Frontier", "test_frontier"),
     ("Interface", "test_interfaces"),
     ("Control/Odometry", "test_control_localization"),
+    ("TurtleBot3 profile", "test_turtlebot"),
+    ("Scan insertion", "test_scan_insertion"),
+    ("Safety monitor", "test_safety"),
+    ("Scheduling", "test_scheduling"),
 ]
+
+# Ground-truth style inputs the competition controller must never use
+# (organizer rule: no Compass / GPS; Supervisor pose is demo/test only).
+FORBIDDEN_CONTROLLER_PATTERNS = (
+    (r"import[^\n]*\bSupervisor\b|\bSupervisor\s*\(", "Supervisor"),
+    (r"\bgetSelf\s*\(|\bgetFromDef\s*\(", "Supervisor node access"),
+    (r"\bGPS\s*\(|\bCompass\s*\(", "GPS/Compass device class"),
+    (r"getDevice\(\s*[\"'](gps|compass)", "GPS/Compass device name"),
+)
 
 results = []
 
@@ -79,6 +97,21 @@ def check_architecture():
     report("Webots API isolated in devices.py/main.py", not offenders, ", ".join(offenders))
 
 
+def check_forbidden_inputs():
+    offenders = []
+    for name in sorted(os.listdir(CONTROLLER_DIR)):
+        if name.endswith(".py"):
+            with open(os.path.join(CONTROLLER_DIR, name), encoding="utf-8") as f:
+                code = f.read()
+            offenders += [f"{name}: {label}" for pattern, label in FORBIDDEN_CONTROLLER_PATTERNS
+                          if re.search(pattern, code)]
+    sys.path.insert(0, CONTROLLER_DIR)
+    import config
+    offenders += [f"config.DEVICE_NAMES[{k!r}] = {v!r}" for k, v in config.DEVICE_NAMES.items()
+                  if v and any(bad in v.lower() for bad in ("gps", "compass"))]
+    report("No GPS/Compass/Supervisor pose in controller", not offenders, "; ".join(offenders))
+
+
 def run_unit_tests():
     sys.path.insert(0, TESTS_DIR)
     loader = unittest.TestLoader()
@@ -93,14 +126,14 @@ def run_unit_tests():
 
 
 def run_webots(mode, seconds):
-    if not os.path.exists(WEBOTS_EXE):
-        report("Webots launch", False, f"webots.exe not found at {WEBOTS_EXE} (set WEBOTS_EXE)")
-        return
     log_path = os.path.join(tempfile.gettempdir(), "rescue_baseline_webots.log")
     if os.path.exists(log_path):
         os.remove(log_path)
     env = dict(os.environ, RESCUE_LOG=log_path, RESCUE_MODE=mode, PYTHONUNBUFFERED="1")
     print(f"[....] launching Webots ({mode}), waiting up to {seconds:.0f}s for the controller log ...")
+    if not os.path.exists(WEBOTS_EXE):
+        report("Webots launch", False, f"Webots not found at {WEBOTS_EXE} (set WEBOTS_EXE)")
+        return
     proc = subprocess.Popen([WEBOTS_EXE, "--mode=realtime", "--stdout", "--stderr", WORLD], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -121,27 +154,42 @@ def run_webots(mode, seconds):
             time.sleep(1.0)
         time.sleep(1.0)  # let the last lines flush
     finally:
-        # webots.exe is a launcher; kill the whole tree without saving the world.
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["taskkill", "/F", "/IM", "webots-bin.exe"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Close Webots without saving the world.
+        if IS_WINDOWS:  # webots.exe is a launcher; kill the whole tree
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
     log = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
     print("----- controller log -----\n" + log.rstrip() + "\n--------------------------")
 
     report("Webots: controller started", "[main] home_pose" in log)
     report("Webots: no traceback / fatal error", bool(log) and "Traceback" not in log and "FATAL" not in log)
+    sensor_msgs = re.findall(r"\[safety\] (\w+ data invalid|required sensors OK)", log)
+    report("Webots: required sensors OK (no fail-closed stop)",
+           bool(log) and (not sensor_msgs or sensor_msgs[-1] == "required sensors OK"))
     if mode == "STOP":
         report("Webots: state machine reached EXPLORE", "-> EXPLORE" in log)
-        gps = re.findall(r"gps_debug=\(([-+\d.]+), ([-+\d.]+)\)", log)
-        if len(gps) >= 2:
-            (x0, y0), (x1, y1) = [tuple(map(float, g)) for g in (gps[0], gps[-1])]
+        poses = re.findall(r"\[status\].*?pose=\(([-+\d.]+), ([-+\d.]+), ([-+\d.]+)deg\)", log)
+        if len(poses) >= 2:
+            (x0, y0, t0), (x1, y1, t1) = [tuple(map(float, p)) for p in (poses[0], poses[-1])]
             moved = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
-            report("Webots: robot holds position (STOP mode)", moved < 0.01, f"max drift {moved:.4f} m")
+            report("Webots: robot holds position (STOP mode, odometry)", moved < 0.01 and abs(t1 - t0) < 1.0,
+                   f"drift {moved:.4f} m, {t1 - t0:+.1f} deg")
         else:
-            report("Webots: robot holds position (STOP mode)", False, "not enough gps_debug status lines")
+            report("Webots: robot holds position (STOP mode, odometry)", False, "not enough status lines")
     else:
         report("Webots: control test finished", "control test finished" in log)
+        steps = re.findall(r"\[control-test\] (\w+)\s+odom=\(([-+\d.]+), ([-+\d.]+), ([-+\d.]+)deg\)", log)
+        if len(steps) >= 6:
+            fwd = float(steps[1][1]) - float(steps[0][1])
+            left = float(steps[3][3]) - float(steps[2][3])
+            report("Webots: forward = +x, left turn = +theta (odometry)", fwd > 0.02 and left > 10.0,
+                   f"dx={fwd:+.3f} m, dtheta={left:+.1f} deg")
 
 
 def main():
@@ -154,6 +202,7 @@ def main():
     check_python_version()
     check_syntax()
     check_architecture()
+    check_forbidden_inputs()
     run_unit_tests()
     if args.webots:
         run_webots(args.mode, args.seconds)
