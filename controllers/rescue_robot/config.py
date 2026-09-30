@@ -53,6 +53,11 @@ TARGET_SIZE = 0.10            # m, diameter used for size-based distance (no hei
 # placement is unknown, so the height filter is OFF by default.
 TARGET_MIN_FILL = 0.5         # blob area / enclosing circle area (apple ~0.8) [INITIAL TUNING]
 TARGET_ASPECT_RANGE = (0.5, 2.0)  # bounding box width / height [INITIAL TUNING]
+# Corner test: the outline simplified with cv2.approxPolyDP (epsilon = 1.5 % of the
+# perimeter) has 4 vertices for squares/trapezoids (red cabinet doors, panels) and
+# >= 8 for circles and apples (with stem) at every size. Fill alone cannot separate
+# them: a square fills 0.64 of its enclosing circle, an apple with stem ~0.65-0.7.
+TARGET_MAX_CORNERS = 6        # blobs with this many vertices or fewer are rejected
 TARGET_MAX_RANGE = 4.0        # m, farther estimates are ignored [INITIAL TUNING]
 # Blobs closer than this to the image border are ignored: a cut-off object has an
 # unreliable shape/size (e.g. a red cabinet at the left edge). It is detected once

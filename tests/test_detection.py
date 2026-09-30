@@ -102,6 +102,28 @@ class TestSingleFrame(unittest.TestCase):
         self.assertEqual(len(valid), 1)
         self.assertTrue(any(r in ("aspect", "not round") for _, r in rejected))
 
+    def test_square_red_door_rejected_by_corners(self):
+        # breakroom_teleop_yolo: a square red cabinet door passes fill (0.64) and aspect (1.0)
+        for pts in ([[300, 200], [380, 200], [380, 280], [300, 280]],        # square
+                    [[300, 200], [380, 190], [385, 280], [298, 270]],        # door in perspective
+                    [[320, 180], [380, 240], [320, 300], [260, 240]]):       # rotated square
+            frame = blank()
+            cv2.fillPoly(frame, [np.array(pts)], RED)
+            valid, rejected, _ = detection.find_blobs(frame)
+            self.assertEqual(valid, [])
+            self.assertEqual(rejected[0][1], "corners")
+
+    def test_apple_with_stem_is_not_rejected_by_corners(self):
+        for depth in (0.4, 1.0, 2.5):
+            with self.subTest(depth=depth):
+                frame = draw_apple(blank(), depth)
+                r = int(round(F * config.TARGET_SIZE / 2 / depth))
+                cy = int(round(H / 2 + F * (config.CAMERA_HEIGHT - 0.05) / depth))
+                cv2.line(frame, (320, cy - r), (322, cy - r - max(2, r // 3)), RED, max(1, r // 12))
+                target, blobs = detection.detect(frame)
+                self.assertTrue(target["found"])
+                self.assertGreater(blobs[0]["vertices"], config.TARGET_MAX_CORNERS)
+
     def test_too_far_rejected(self):
         valid, rejected, _ = detection.find_blobs(draw_apple(blank(), 6.0, shaded=False))
         self.assertEqual(valid, [])
