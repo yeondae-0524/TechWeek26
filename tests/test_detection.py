@@ -98,9 +98,11 @@ class TestSingleFrame(unittest.TestCase):
         green = draw_apple(blank(), 1.0, color=GREEN, shaded=False)
         self.assertFalse(detection.detect_target(green)["found"])                      # default = red
         self.assertTrue(detection.detect_target(green, hsv_ranges=GREEN_RANGES)["found"])
+                # hue wrap-around: two ranges on both ends of 0..179 (independent of tuned config values)
         wrap = draw_apple(blank(), 1.0, color=(40, 0, 230), shaded=False)              # hue ~175
-        self.assertTrue(detection.detect_target(wrap)["found"])
-
+        wrap_ranges = [((0, 100, 60), (10, 255, 255)), ((170, 100, 60), (179, 255, 255))]
+        self.assertTrue(detection.detect_target(wrap, hsv_ranges=wrap_ranges)["found"])
+    
     def test_direction_borders(self):
         self.assertEqual(detection.direction_of(213, W), "LEFT")
         self.assertEqual(detection.direction_of(214, W), "CENTER")

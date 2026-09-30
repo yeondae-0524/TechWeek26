@@ -78,10 +78,8 @@ REQUIRED_TARGETS = 2          # distinct targets to visit before RETURN_HOME
 # OpenCV HSV ranges (H 0-179, S 0-255, V 0-255), list of (lower, upper). A pixel
 # matching ANY range counts. Red needs two ranges because its hue wraps at 0/180.
 # Tune on real Webots frames: RESCUE_FRAME_DUMP + scripts/tune_hsv.py [INITIAL TUNING].
-TARGET_HSV_RANGES = [
-    ((0, 120, 70), (10, 255, 255)),     # red, low hue side
-    ((170, 120, 70), (179, 255, 255)),  # red, high hue side
-]
+TARGET_HSV_RANGES = [((0, 111, 100), (7, 255, 255)), ((179, 111, 100), (179, 255, 255))]
+
 # Other practice colours (examples, tune first):
 #   green ball [((35, 80, 40), (85, 255, 255))]   orange [((10, 120, 70), (25, 255, 255))]
 TARGET_MIN_AREA = 40.0        # px, smaller blobs are ignored [INITIAL TUNING]
@@ -94,7 +92,7 @@ TARGET_SIZE = 0.10            # m, diameter used for size-based distance (no hei
 # the apple lies. Practice worlds put apples on the floor, but the competition
 # placement is unknown, so the height filter is OFF by default.
 TARGET_MIN_FILL = 0.5         # blob area / enclosing circle area (apple ~0.8) [INITIAL TUNING]
-TARGET_ASPECT_RANGE = (0.5, 2.0)  # bounding box width / height [INITIAL TUNING]
+TARGET_ASPECT_RANGE = (0.6, 1.7)  # bounding box width / height [INITIAL TUNING]
 TARGET_MAX_RANGE = 4.0        # m, farther estimates are ignored [INITIAL TUNING]
 # (min, max) height of the apple centre above the floor [m], or None = any height.
 # Only set this if the organizers confirm where targets can be, e.g. (0.0, 0.2) = floor.
