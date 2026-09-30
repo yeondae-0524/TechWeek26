@@ -89,7 +89,8 @@ class RescueMission:
         self.step_count = 0
         self.last_status_time = -1e9
         self.target = empty_target()
-        self.found_targets = []  # TODO(feat/integration): target world positions
+        self.tracker = detection.TargetTracker()  # confirmed targets with world (x, y)
+        self.approach_target_id = None
         self.home_path = None
         self.home_plan_pending = False
         self.test_index = -1
@@ -122,7 +123,10 @@ class RescueMission:
 
         # 4. detection (camera frame only read when due)
         if self.detection_timer.due(now):
-            self.target = detection.detect_target(self.devices.read_camera_frame())
+            self.target, blobs = detection.detect(self.devices.read_camera_frame())
+            for track in self.tracker.update(now, pose, blobs):
+                print(f"[detection] CONFIRMED target #{track['id']} at "
+                      f"({track['xy'][0]:+.2f}, {track['xy'][1]:+.2f})")
 
         # 5 + 6. planning & control (per state)
         handler = {
@@ -189,9 +193,14 @@ class RescueMission:
             self.transition(EXPLORE, now)
 
     def do_explore(self, now, pose):
-        if self.target["found"]:
-            self.found_targets.append({"time": now, "target": dict(self.target), "pose": pose})
-            self.transition(APPROACH_TARGET, now, f"target {self.target}")
+        if self.tracker.all_visited():
+            self.transition(RETURN_HOME, now, f"{self.tracker.visited_count()} targets visited")
+            return
+        track = self.tracker.nearest_unvisited(pose)
+        if track is not None:  # a single-frame hit is not enough: wait for confirmation
+            self.approach_target_id = track["id"]
+            self.transition(APPROACH_TARGET, now,
+                            f"target #{track['id']} at ({track['xy'][0]:+.2f}, {track['xy'][1]:+.2f})")
             return
         if now > config.MISSION_TIME_LIMIT:
             self.transition(RETURN_HOME, now, "mission time limit")
@@ -202,9 +211,10 @@ class RescueMission:
         self.controller.follow_waypoint(pose)  # holds position until implemented
 
     def do_approach_target(self, now, pose):
-        # TODO(feat/integration): estimate target world position from camera
-        # direction + lidar range, plan to it, stop at a safe distance, mark it
-        # as rescued, then go back to EXPLORE or RETURN_HOME.
+        # TODO(feat/integration): plan to the confirmed target position
+        # (self.tracker, self.approach_target_id), stop at the arrival distance
+        # [DAY-OF], call self.tracker.mark_visited(id), then go back to EXPLORE
+        # (which switches to RETURN_HOME once REQUIRED_TARGETS are visited).
         self.controller.stop()
         if now > config.MISSION_TIME_LIMIT:
             self.transition(RETURN_HOME, now, "mission time limit")
@@ -295,6 +305,8 @@ class RescueMission:
             if dump:
                 self.grid.save_pgm(dump)
         parts.append(f"target_found={self.target['found']}")
+        parts.append(f"targets confirmed={len(self.tracker.confirmed())} "
+                     f"visited={self.tracker.visited_count()}/{config.REQUIRED_TARGETS}")
         if self.target["found"]:
             parts.append(f"target cx={self.target['cx']} dir={self.target['direction']} "
                          f"area={self.target['area']:.0f}")
