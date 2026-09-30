@@ -53,6 +53,7 @@ TEST_GROUPS = [
     ("Scheduling", "test_scheduling"),
     ("Rescue worlds", "test_rescue_worlds"),
     ("Detection", "test_detection"),
+    ("HSV tuning tool", "test_tune_hsv"),
 ]
 
 # Ground-truth style inputs the competition controller must never use
