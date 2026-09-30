@@ -57,8 +57,11 @@ class TestTurtleBotProfile(unittest.TestCase):
         self.assertAlmostEqual(config.DETECTION_PERIOD, 0.128)
 
     def test_grid_covers_official_world_size(self):
-        self.assertGreaterEqual(config.GRID_WIDTH * config.GRID_RESOLUTION, 20.0)
-        self.assertGreaterEqual(config.GRID_HEIGHT * config.GRID_RESOLUTION, 20.0)
+        # apartment.wbt: x in [-12.4, 0], y in [-13.12, 0], start (-0.3, -7.5) [OFFICIAL]
+        half_w = config.GRID_WIDTH * config.GRID_RESOLUTION / 2
+        half_h = config.GRID_HEIGHT * config.GRID_RESOLUTION / 2
+        self.assertGreaterEqual(half_w, max(abs(-12.4 + 0.3), abs(0.0 + 0.3)))
+        self.assertGreaterEqual(half_h, max(abs(-13.12 + 7.5), abs(0.0 + 7.5)))
 
 
 class TestTurtleBotKinematics(unittest.TestCase):
